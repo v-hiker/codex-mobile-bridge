@@ -12,9 +12,13 @@
   }
 
   const VALUE_HOOK = Symbol.for('bridge.desktop.selectValueHook');
+  const SELECTED_INDEX_HOOK = Symbol.for('bridge.desktop.selectIndexHook');
   const enhanced = new WeakMap();
+  const pendingEnhance = new Set();
   const pendingSync = new Set();
   let syncScheduled = false;
+  let flushesInTask = 0;
+  let resetTaskScheduled = false;
   let openState = null;
 
   const valueDescriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
@@ -31,6 +35,40 @@
         scheduleSync(this);
       },
     });
+  }
+
+  const indexDescriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'selectedIndex');
+  if (indexDescriptor && indexDescriptor.get && indexDescriptor.set && !HTMLSelectElement.prototype[SELECTED_INDEX_HOOK]) {
+    Object.defineProperty(HTMLSelectElement.prototype, SELECTED_INDEX_HOOK, { value: true });
+    Object.defineProperty(HTMLSelectElement.prototype, 'selectedIndex', {
+      configurable: true,
+      enumerable: indexDescriptor.enumerable,
+      get() {
+        return indexDescriptor.get.call(this);
+      },
+      set(next) {
+        indexDescriptor.set.call(this, next);
+        scheduleSync(this);
+      },
+    });
+  }
+
+  function isOwnNode(node) {
+    const el = node?.nodeType === 1 ? node : node?.parentElement;
+    return !!el?.closest?.('.cmb-select, .cmb-select-menu');
+  }
+
+  function inDocument(node) {
+    return typeof document.contains === 'function' ? document.contains(node) : true;
+  }
+
+  function optionsSignature(select) {
+    const parts = [`v:${select.value}`];
+    for (const opt of select.options) {
+      if (opt.hidden) continue;
+      parts.push(`${opt.value}\0${opt.textContent}\0${opt.disabled ? '1' : '0'}`);
+    }
+    return parts.join('\x01');
   }
 
   function svgEl(tag, attrs) {
@@ -149,25 +187,55 @@
       select.options[0] ||
       null;
     const displayText = selectedOpt ? selectedOpt.textContent.trim() : '';
-    label.textContent = displayText || '\u2014';
-    label.classList.toggle('is-placeholder', !displayText || (selectedOpt && selectedOpt.value === '' && select.options.length > 1));
+    const nextText = displayText || '\u2014';
+    if (label.textContent !== nextText) {
+      label.textContent = nextText;
+    }
+    const isPlaceholder = Boolean(!displayText || (selectedOpt && selectedOpt.value === '' && select.options.length > 1));
+    if (label.classList.contains('is-placeholder') !== isPlaceholder) {
+      label.classList.toggle('is-placeholder', isPlaceholder);
+    }
 
-    const parentHidden = select.hidden || select.style.display === 'none';
-    wrap.hidden = parentHidden;
-    trigger.disabled = !!select.disabled;
-    trigger.title = select.title || '';
-    wrap.classList.toggle('is-disabled', !!select.disabled);
-    wrap.classList.toggle('is-invalid', select.getAttribute('aria-invalid') === 'true');
-    wrap.classList.toggle('is-unsaved', select.dataset.unsaved === 'true');
-    const ariaLabel = select.getAttribute('aria-label');
-    if (ariaLabel) trigger.setAttribute('aria-label', ariaLabel);
+    const parentHidden = Boolean(select.hidden || select.style?.display === 'none');
+    if (Boolean(wrap.hidden) !== parentHidden) {
+      wrap.hidden = parentHidden;
+    }
+    const isDisabled = Boolean(select.disabled);
+    if (Boolean(trigger.disabled) !== isDisabled) {
+      trigger.disabled = isDisabled;
+    }
+    const nextTitle = select.title || '';
+    if (trigger.title !== nextTitle) {
+      trigger.title = nextTitle;
+    }
+    if (wrap.classList.contains('is-disabled') !== isDisabled) {
+      wrap.classList.toggle('is-disabled', isDisabled);
+    }
+    const isInvalid = select.getAttribute('aria-invalid') === 'true';
+    if (wrap.classList.contains('is-invalid') !== isInvalid) {
+      wrap.classList.toggle('is-invalid', isInvalid);
+    }
+    const isUnsaved = select.dataset?.unsaved === 'true';
+    if (wrap.classList.contains('is-unsaved') !== isUnsaved) {
+      wrap.classList.toggle('is-unsaved', isUnsaved);
+    }
+    const ariaLabel = select.getAttribute('aria-label') || '';
+    const currentAriaLabel = trigger.getAttribute('aria-label') || '';
+    if (ariaLabel !== currentAriaLabel) {
+      if (ariaLabel) trigger.setAttribute('aria-label', ariaLabel);
+      else trigger.removeAttribute('aria-label');
+    }
 
     if (openState && openState.select === select) {
-      if (trigger.disabled || wrap.hidden || !document.contains(select)) {
+      if (trigger.disabled || wrap.hidden || !inDocument(select)) {
         closeOpenMenu();
       } else {
-        populateMenu(select, openState.menu);
-        positionMenu(trigger, openState.menu);
+        const sig = optionsSignature(select);
+        if (openState.signature !== sig) {
+          openState.signature = sig;
+          populateMenu(select, openState.menu);
+          positionMenu(trigger, openState.menu);
+        }
       }
     }
   }
@@ -196,10 +264,12 @@
         e.stopPropagation();
         if (opt.disabled || select.disabled) return;
         const changed = select.value !== opt.value;
-        valueDescriptor.set.call(select, opt.value);
+        if (valueDescriptor?.set) valueDescriptor.set.call(select, opt.value);
+        else select.value = opt.value;
         syncTrigger(select);
         closeOpenMenu({ restoreFocus: true });
         if (changed) {
+          select.dispatchEvent(new Event('input', { bubbles: true }));
           select.dispatchEvent(new Event('change', { bubbles: true }));
         }
       };
@@ -227,7 +297,13 @@
 
     state.wrap.classList.add('is-open');
     state.trigger.setAttribute('aria-expanded', 'true');
-    openState = { select, wrap: state.wrap, trigger: state.trigger, menu };
+    openState = {
+      select,
+      wrap: state.wrap,
+      trigger: state.trigger,
+      menu,
+      signature: optionsSignature(select),
+    };
 
     const active = menu.querySelector('[aria-selected="true"]:not(:disabled)') || menu.querySelector('.cmb-select-option:not(:disabled)');
     active?.focus({ preventScroll: true });
@@ -294,20 +370,49 @@
     for (const select of document.querySelectorAll('select')) syncTrigger(select);
   }
 
+  function resetTaskBudget() {
+    flushesInTask = 0;
+    resetTaskScheduled = false;
+  }
+
+  function flushSync() {
+    if (!resetTaskScheduled && typeof setTimeout === 'function') {
+      resetTaskScheduled = true;
+      setTimeout(resetTaskBudget, 0);
+    }
+    if (flushesInTask >= 50) {
+      syncScheduled = false;
+      pendingEnhance.clear();
+      pendingSync.clear();
+      return;
+    }
+    flushesInTask++;
+    const toEnhance = [...pendingEnhance];
+    const toSync = [...pendingSync];
+    pendingEnhance.clear();
+    pendingSync.clear();
+    try {
+      for (const select of toEnhance) {
+        enhance(select);
+      }
+      for (const select of toSync) {
+        if (!enhanced.has(select) && select.parentNode) enhance(select);
+        else syncTrigger(select);
+      }
+    } finally {
+      syncScheduled = false;
+    }
+    if (pendingEnhance.size || pendingSync.size) {
+      scheduleSync();
+    }
+  }
+
   function scheduleSync(target) {
     if (target?.tagName === 'SELECT') pendingSync.add(target);
+    if (!pendingEnhance.size && !pendingSync.size) return;
     if (syncScheduled) return;
     syncScheduled = true;
-    queueMicrotask(() => {
-      syncScheduled = false;
-      enhanceAll(document);
-      if (pendingSync.size) {
-        for (const select of pendingSync) syncTrigger(select);
-        pendingSync.clear();
-      } else {
-        for (const select of document.querySelectorAll('select')) syncTrigger(select);
-      }
-    });
+    queueMicrotask(flushSync);
   }
 
   document.addEventListener('change', (e) => {
@@ -354,20 +459,52 @@
   }, true);
 
   const observer = new MutationObserver((records) => {
-    let sawAll = false;
     for (const record of records) {
+      if (isOwnNode(record.target)) continue;
       if (record.type === 'childList') {
-        const select = record.target.closest?.('select');
-        if (select) pendingSync.add(select);
-        else sawAll = true;
+        const ownerSelect = record.target.closest?.('select');
+        if (ownerSelect) {
+          pendingSync.add(ownerSelect);
+          continue;
+        }
+        for (const node of record.addedNodes || []) {
+          if (!node || node.nodeType !== 1 || isOwnNode(node)) continue;
+          if (node.tagName === 'SELECT') pendingEnhance.add(node);
+          else if (node.querySelectorAll) {
+            for (const select of node.querySelectorAll('select')) pendingEnhance.add(select);
+          }
+        }
+        for (const node of record.removedNodes || []) {
+          if (!node || node.nodeType !== 1 || isOwnNode(node)) continue;
+          if (openState && (node === openState.select || node.contains?.(openState.select))) {
+            closeOpenMenu();
+          }
+          const removedSelects = node.tagName === 'SELECT'
+            ? [node]
+            : [...(node.querySelectorAll?.('select') || [])];
+          for (const removed of removedSelects) {
+            const state = enhanced.get(removed);
+            if (state && !inDocument(removed)) {
+              if (state.wrap.parentNode) state.wrap.remove();
+              enhanced.delete(removed);
+              pendingEnhance.delete(removed);
+              pendingSync.delete(removed);
+            }
+          }
+        }
       } else if (record.type === 'attributes') {
-        if (record.target.tagName === 'SELECT') pendingSync.add(record.target);
+        if (record.target.tagName === 'SELECT') {
+          pendingSync.add(record.target);
+        } else if (record.target.tagName === 'OPTION') {
+          const ownerSelect = record.target.closest?.('select');
+          if (ownerSelect) pendingSync.add(ownerSelect);
+        }
       } else if (record.type === 'characterData') {
-        const select = record.target.parentElement?.closest?.('select');
-        if (select) pendingSync.add(select);
+        const ownerSelect = record.target.parentElement?.closest?.('select');
+        if (ownerSelect) pendingSync.add(ownerSelect);
       }
     }
-    if (sawAll || pendingSync.size) scheduleSync();
+    if (pendingEnhance.size || pendingSync.size) scheduleSync();
   });
 
   const startObserver = () => {
@@ -376,7 +513,7 @@
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ['disabled', 'hidden', 'aria-invalid', 'data-unsaved', 'selected'],
+      attributeFilter: ['disabled', 'hidden', 'style', 'aria-invalid', 'data-unsaved', 'selected'],
       characterData: true,
     });
   };
