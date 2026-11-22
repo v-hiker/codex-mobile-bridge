@@ -668,6 +668,47 @@ class ClientLifecycleTests(unittest.TestCase):
             self.manager.runtime_preparation_thread.join(2)
         self.assertEqual(checks, [True, False])
 
+    def test_windows_codex_executable_prefers_existing_discovered_gui_over_runtime_heuristic(self):
+        discovered = self.root / 'Store' / 'ChatGPT.exe'
+        discovered.parent.mkdir(parents=True)
+        discovered.write_bytes(b'MZ-gui')
+        self.accounts.index['desktopExecutable'] = ''
+        self.accounts.runtime = self.root / 'Local/OpenAI/Codex/bin/hash/codex.exe'
+        self.manager.config['discovered']['codex']['executable'] = str(discovered)
+        with patch('bridge.clients.manager.sys.platform', 'win32'), \
+             patch('bridge.clients.desktop_app.DesktopApp.discover', return_value=str(self.root / 'wrong.exe')) as discover:
+            self.assertEqual(self.manager._codex_executable(self.accounts), str(discovered))
+        discover.assert_not_called()
+
+    def test_codex_preparation_refreshes_app_when_descriptor_executable_changes(self):
+        from bridge.clients import manager as module
+        first = self.root / 'codex-old.exe'
+        second = self.root / 'codex-new.exe'
+        first.write_bytes(b'MZ-1')
+        second.write_bytes(b'MZ-2')
+        seen = []
+        cancelled = threading.Event()
+
+        class MonitorEvent:
+            is_set = cancelled.is_set
+            set = cancelled.set
+            def wait(self, _delay):
+                return len(seen) >= 2
+
+        def ready(app, **options):
+            seen.append(Path(app.executable).resolve())
+            self.manager.config['discovered']['codex']['executable'] = str(second)
+            return False
+
+        self.accounts.index['desktopExecutable'] = ''
+        self.manager.config['discovered']['codex']['executable'] = str(first)
+        self.accounts.prepare_desktop_runtime.side_effect = ready
+        with patch('bridge.clients.manager.sys.platform', 'win32'), \
+             patch.object(module, 'threading', SimpleNamespace(Event=lambda: MonitorEvent(), Thread=threading.Thread)):
+            self.manager._prepare_codex_runtime({'executable': str(first), 'dataDirectory': str(self.accounts.home)})
+            self.manager.runtime_preparation_thread.join(2)
+        self.assertEqual(seen, [first.resolve(), second.resolve()])
+
     def test_codex_disable_cancels_preparation_before_waiting_for_its_gate(self):
         entered, cancelled = threading.Event(), threading.Event()
         # Hold the preparation gate until the disable request cancels it.

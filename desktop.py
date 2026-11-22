@@ -4,9 +4,28 @@ import argparse
 import json
 import os
 import sys
+_DESKTOP_ACTIONS = (
+    'management-stream', 'tailscale-setup', 'read-credentials', 'server-setup',
+    'connection-credentials', 'snapshot-stream', 'snapshot', 'save', 'start', 'stop',
+    'logs', 'test-notification', 'webhook-endpoint', 'deployment', 'export-deployment',
+    'check-entry', 'devices', 'pairing', 'account', 'accounts', 'cli-access', 'harness',
+    'desktop-sessions', 'notification-watches', 'transfer-settings', 'network-adaptation',
+    'serve', 'update-preflight', 'update-prepare', 'update-backup', 'update-apply',
+)
+_DESKTOP_ENTRYPOINTS = frozenset((
+    *_DESKTOP_ACTIONS,
+    'codex-desktop-runtime', '--terminal-child', 'zcode-pipe-host',
+    'local-service-host', 'antigravity-hook', '-h', '--help',
+))
+
 if sys.platform == 'win32' and os.environ.get('CMB_CODEX_DESKTOP_CONFIGURATION'):
     from bridge.clients.codex.desktop_runtime_windows import run as windows_runtime_main
     raise SystemExit(windows_runtime_main(os.environ['CMB_CODEX_DESKTOP_CONFIGURATION'], sys.argv[1:]))
+if __name__ == '__main__' and sys.platform == 'win32' and sys.argv[1:] and sys.argv[1] not in _DESKTOP_ENTRYPOINTS:
+    from bridge.clients.codex.desktop_runtime_windows import run_cli_passthrough
+    code = run_cli_passthrough(sys.argv[1:])
+    if code is not None:
+        raise SystemExit(code)
 if sys.argv[1:2] == ['codex-desktop-runtime']:
     parser = argparse.ArgumentParser()
     parser.add_argument('--configuration', required=True)
@@ -58,7 +77,7 @@ def main():
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stdin.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['management-stream', 'tailscale-setup', 'read-credentials', 'server-setup', 'connection-credentials', 'snapshot-stream', 'snapshot', 'save', 'start', 'stop', 'logs', 'test-notification', 'webhook-endpoint', 'deployment', 'export-deployment', 'check-entry', 'devices', 'pairing', 'account', 'accounts', 'cli-access', 'harness', 'desktop-sessions', 'notification-watches', 'transfer-settings', 'network-adaptation', 'serve', 'update-preflight', 'update-prepare', 'update-backup', 'update-apply'])
+    parser.add_argument('action', choices=_DESKTOP_ACTIONS)
     parser.add_argument('--data-dir', required=True)
     parser.add_argument('--plan')
     parser.add_argument('--connection-secrets-stdin', action='store_true')

@@ -3,11 +3,15 @@ import io
 import os
 from pathlib import Path
 import sys
+import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+ROOT = Path(__file__).resolve().parents[1]
+(ROOT / '.tmp').mkdir(exist_ok=True)
 
 from bridge.clients.codex.desktop_stdio import DesktopStdio
 from bridge.clients.codex.app_server import AppServerUnavailable, AppServerUnknownResult, AppServerRequestNotSent
@@ -43,6 +47,176 @@ class WindowsAuxiliaryCommandTests(unittest.TestCase):
                         stdin=windows_runtime.sys.stdin, stdout=windows_runtime.sys.stdout,
                         stderr=windows_runtime.sys.stderr,
                         creationflags=0x08000000)
+
+    def test_non_owner_or_external_home_caller_passes_through_and_rewrites_cli_path(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as folder:
+            home = Path(folder) / 'home'
+            other_home = Path(folder) / 'other-home'
+            cli = Path(folder) / 'native.exe'
+            configuration = windows_runtime.directory(home) / 'settings.json'
+            config = {'version': 1, 'home': str(home), 'launcher': sys.executable,
+                      'application': 'ChatGPT.exe',
+                      'cli': str(cli), 'sandboxFamily': 'OpenAI.Codex_fixture'}
+            args = ['app-server', '--listen', 'stdio://']
+            scenarios = (
+                ('non-owner', {'CODEX_HOME': str(home), 'CODEX_CLI_PATH': sys.executable,
+                               'CMB_CODEX_DESKTOP_CONFIGURATION': str(configuration)},
+                 ValueError('Desktop runtime parent is not the selected App')),
+                ('other-home', {'CODEX_HOME': str(other_home), 'CODEX_CLI_PATH': sys.executable,
+                                'CMB_CODEX_DESKTOP_CONFIGURATION': str(configuration)}, None),
+                ('other-sqlite', {'CODEX_HOME': str(home), 'CODEX_SQLITE_HOME': str(other_home),
+                                  'CODEX_CLI_PATH': sys.executable,
+                                  'CMB_CODEX_DESKTOP_CONFIGURATION': str(configuration)}, None),
+            )
+            for label, source_env, owner_error in scenarios:
+                with self.subTest(case=label):
+                    expected_env = {k: v for k, v in source_env.items() if k != 'CMB_CODEX_DESKTOP_CONFIGURATION'}
+                    expected_env['CODEX_CLI_PATH'] = str(cli)
+                    expected_env['CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY'] = 'OpenAI.Codex_fixture'
+                    owner_patch = (patch('bridge.clients.codex.desktop_runtime.desktop_owner', side_effect=owner_error)
+                                   if owner_error else patch('bridge.clients.codex.desktop_runtime.desktop_owner'))
+                    stdin_mock, stdout_mock = Mock(), Mock()
+                    with patch.dict(sys.modules, {'msvcrt': SimpleNamespace(setmode=Mock())}), \
+                         patch.object(windows_runtime, '_read', return_value=config), \
+                         patch.object(windows_runtime.os, 'O_BINARY', 0, create=True), \
+                         patch.object(windows_runtime.sys, 'stdin', stdin_mock), \
+                         patch.object(windows_runtime.sys, 'stdout', stdout_mock), \
+                         patch.dict(os.environ, source_env, clear=True), \
+                         patch.object(windows_runtime.subprocess, 'CREATE_NO_WINDOW', 0x08000000, create=True), \
+                         patch.object(windows_runtime.subprocess, 'call', return_value=19) as call, \
+                         patch.object(windows_runtime, 'process_identity', return_value={'pid': 99, 'image': 'node_repl.exe'}), \
+                         patch.object(windows_runtime, 'exclusive_lock') as lock, \
+                         patch('bridge.clients.codex.desktop_host.serve') as hosted_serve, \
+                         owner_patch:
+                        self.assertEqual(windows_runtime.run(str(configuration), args), 19)
+                        call.assert_called_once_with([str(cli), *args],
+                            env=expected_env,
+                            stdin=stdin_mock, stdout=stdout_mock,
+                            stderr=windows_runtime.sys.stderr, creationflags=0x08000000)
+                    lock.assert_not_called()
+                    hosted_serve.assert_not_called()
+
+    def test_primary_parent_with_auxiliary_client_info_uses_stdio_passthrough(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as folder:
+            home = Path(folder) / 'home'
+            cli = Path(folder) / 'native.exe'
+            configuration = windows_runtime.directory(home) / 'settings.json'
+            config = {'version': 1, 'home': str(home), 'launcher': sys.executable,
+                      'application': 'ChatGPT.exe',
+                      'cli': str(cli), 'sandboxFamily': 'OpenAI.Codex_fixture'}
+            first = json.dumps({'id': 1, 'method': 'initialize',
+                                'params': {'clientInfo': {'name': 'codex-browser-use'}}}).encode() + b'\n'
+            second = b'{"id":2,"method":"thread/list"}\n'
+            written = bytearray()
+            closed = threading.Event()
+
+            class Writer:
+                def write(self, data):
+                    written.extend(data)
+                    return len(data)
+                def close(self):
+                    closed.set()
+
+            child = Mock(stdin=Writer())
+            child.wait.return_value = 0
+            stdin = SimpleNamespace(fileno=lambda: 0, buffer=io.BytesIO(first + second))
+            env = {'CMB_CODEX_DESKTOP_CONFIGURATION': str(configuration),
+                   'CODEX_HOME': str(home), 'CODEX_CLI_PATH': sys.executable}
+            with patch.dict(sys.modules, {'msvcrt': SimpleNamespace(setmode=Mock())}), \
+                 patch.object(windows_runtime, '_read', return_value=config), \
+                 patch.object(windows_runtime.os, 'O_BINARY', 0, create=True), \
+                 patch.object(windows_runtime.sys, 'stdin', stdin), \
+                 patch.object(windows_runtime.sys, 'stdout', Mock(fileno=lambda: 1)), \
+                 patch.dict(os.environ, env, clear=True), \
+                 patch.object(windows_runtime.subprocess, 'CREATE_NO_WINDOW', 0x08000000, create=True), \
+                 patch.object(windows_runtime.subprocess, 'Popen', return_value=child) as popen, \
+                 patch.object(windows_runtime, 'process_identity', return_value={'pid': 10}), \
+                 patch('bridge.clients.codex.desktop_runtime.desktop_owner', return_value=({'pid': 10}, None)), \
+                 patch.object(windows_runtime, 'exclusive_lock') as lock, \
+                 patch('bridge.clients.codex.desktop_host.serve') as hosted_serve:
+                self.assertEqual(windows_runtime.run(str(configuration), ['app-server', '--listen', 'stdio://']), 0)
+            self.assertTrue(closed.wait(2))
+            self.assertEqual(bytes(written), first + second)
+            self.assertEqual(popen.call_args.kwargs['env']['CODEX_CLI_PATH'], str(cli))
+            self.assertNotIn('CMB_CODEX_DESKTOP_CONFIGURATION', popen.call_args.kwargs['env'])
+            lock.assert_not_called()
+            hosted_serve.assert_not_called()
+
+    def test_run_cli_passthrough_forwards_verified_cua_repl_without_config_env(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as folder:
+            home = Path(folder) / 'home'
+            cli = Path(folder) / 'codex.exe'
+            cli.write_bytes(b'MZ-fixture')
+            settings_path = windows_runtime.directory(home) / 'settings.json'
+            settings_path.parent.mkdir(parents=True)
+            settings_path.touch()
+            config = {'version': 1, 'home': str(home), 'launcher': sys.executable,
+                      'cli': str(cli), 'sandboxFamily': 'OpenAI.Codex_fixture'}
+            cases = (
+                ('with-env-cli-path', {'CODEX_HOME': str(home), 'CODEX_CLI_PATH': sys.executable},
+                 ['app-server', '--listen', 'stdio://']),
+                ('without-env-cli-path', {'CODEX_HOME': str(home)},
+                 ['-c', 'features.foo=true', 'app-server']),
+                ('version-flag', {'CODEX_HOME': str(home)}, ['--version']),
+            )
+            for label, env, args in cases:
+                with self.subTest(case=label):
+                    expected_env = dict(env)
+                    if 'CODEX_CLI_PATH' in expected_env:
+                        expected_env['CODEX_CLI_PATH'] = str(cli)
+                    expected_env['CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY'] = 'OpenAI.Codex_fixture'
+                    with patch.dict(os.environ, env, clear=True), \
+                         patch.object(windows_runtime.Path, 'home', return_value=Path(folder) / 'user'), \
+                         patch.object(windows_runtime, '_read', return_value=config), \
+                         patch.object(windows_runtime.subprocess, 'CREATE_NO_WINDOW', 0x08000000, create=True), \
+                         patch.object(windows_runtime.subprocess, 'call', return_value=17) as call, \
+                         patch.object(windows_runtime, 'exclusive_lock') as lock:
+                        self.assertEqual(windows_runtime.run_cli_passthrough(args), 17)
+                    call.assert_called_once_with([str(cli), *args],
+                        env=expected_env,
+                        stdin=windows_runtime.sys.stdin, stdout=windows_runtime.sys.stdout,
+                        stderr=windows_runtime.sys.stderr, creationflags=0x08000000)
+                    lock.assert_not_called()
+                    self.assertFalse((windows_runtime.directory(home) / 'active.json').exists())
+
+    def test_run_cli_passthrough_rejects_unverified_or_non_cli_invocations(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / '.tmp') as folder:
+            home = Path(folder) / 'home'
+            cli = Path(folder) / 'codex.exe'
+            cli.write_bytes(b'MZ-fixture')
+            settings_path = windows_runtime.directory(home) / 'settings.json'
+            settings_path.parent.mkdir(parents=True)
+            settings_path.touch()
+            valid = {'version': 1, 'home': str(home), 'launcher': sys.executable, 'cli': str(cli)}
+            with patch.dict(os.environ, {'CODEX_HOME': str(home)}, clear=True), \
+                 patch.object(windows_runtime.Path, 'home', return_value=Path(folder) / 'user'), \
+                 patch.object(windows_runtime.subprocess, 'call') as call:
+                self.assertIsNone(windows_runtime.run_cli_passthrough([]))
+                with patch.object(windows_runtime, '_read', return_value=valid):
+                    self.assertIsNone(windows_runtime.run_cli_passthrough(['unknown-action', '--data-dir', 'x']))
+                for bad in (
+                    {**valid, 'launcher': str(Path(folder) / 'other-gateway.exe')},
+                    {**valid, 'version': 2},
+                    {**valid, 'cli': sys.executable},
+                    {**valid, 'cli': str(Path(folder) / 'missing.exe')},
+                    {**valid, 'home': str(Path(folder) / 'other-home')},
+                ):
+                    with patch.object(windows_runtime, '_read', return_value=bad):
+                        self.assertIsNone(windows_runtime.run_cli_passthrough(['app-server']))
+                with patch.object(windows_runtime, '_read', side_effect=ValueError('security denied')):
+                    self.assertIsNone(windows_runtime.run_cli_passthrough(['app-server']))
+            call.assert_not_called()
+
+    def test_desktop_entrypoint_routes_windows_auxiliary_cli_before_argparse(self):
+        import runpy
+        with patch.object(sys, 'platform', 'win32'), \
+             patch.object(sys, 'argv', ['desktop.py', 'app-server', '--listen', 'stdio://']), \
+             patch.dict(os.environ, {}, clear=True), \
+             patch.object(windows_runtime, 'run_cli_passthrough', return_value=17) as passthrough:
+            with self.assertRaises(SystemExit) as exited:
+                runpy.run_path(str(ROOT / 'desktop.py'), run_name='__main__')
+        self.assertEqual(exited.exception.code, 17)
+        passthrough.assert_called_once_with(['app-server', '--listen', 'stdio://'])
 
 
 class DesktopStdioTests(unittest.TestCase):

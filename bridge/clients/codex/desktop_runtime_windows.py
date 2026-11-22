@@ -22,6 +22,145 @@ from .desktop_stdio import DesktopStdio, MAX_LINE, METADATA_METHODS
 
 
 NAME = 'codex-desktop'
+_AUXILIARY_CLI_COMMANDS = frozenset(('app-server', 'exec-server', 'mcp', 'mcp-server', 'sandbox'))
+
+
+def _same_path(left, right):
+    if not left or not right:
+        return False
+    try:
+        return (os.path.normcase(str(Path(left).expanduser().resolve()))
+                == os.path.normcase(str(Path(right).expanduser().resolve())))
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _child_env(config, source=None):
+    env = dict(os.environ if source is None else source)
+    env.pop('CMB_CODEX_DESKTOP_CONFIGURATION', None)
+    if env.get('CODEX_CLI_PATH') and _same_path(env['CODEX_CLI_PATH'], sys.executable):
+        env['CODEX_CLI_PATH'] = config['cli']
+    # Desktop's override bootstrap removes this variable. Preserve the exact
+    # registered package identity instead of weakening its native sandbox.
+    if config.get('sandboxFamily'):
+        env['CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY'] = config['sandboxFamily']
+    return env
+
+
+def _passthrough_call(cli, arguments, env):
+    # Windows CRT process overlay can crash before forwarding startup output.
+    return subprocess.call([cli, *arguments], env=env, stdin=sys.stdin, stdout=sys.stdout,
+                           stderr=sys.stderr, creationflags=subprocess.CREATE_NO_WINDOW)
+
+
+def _write_all(stream, data):
+    view = memoryview(data)
+    while view:
+        written = stream.write(view)
+        if not written:
+            break
+        view = view[written:]
+
+
+def _passthrough_stdio(cli, arguments, env, first):
+    """Preserve an auxiliary stdio caller after examining its first message."""
+    child = subprocess.Popen([cli, *arguments], env=env, stdin=subprocess.PIPE,
+                             stdout=sys.stdout, stderr=sys.stderr, bufsize=0,
+                             creationflags=subprocess.CREATE_NO_WINDOW)
+    reader = sys.stdin.buffer
+
+    def forward():
+        try:
+            if first:
+                _write_all(child.stdin, first)
+            while True:
+                chunk = reader.read1(65536) if hasattr(reader, 'read1') else reader.read(65536)
+                if not chunk:
+                    break
+                _write_all(child.stdin, chunk)
+        except (OSError, ValueError):
+            pass
+        finally:
+            with contextlib.suppress(OSError, ValueError):
+                child.stdin.close()
+
+    threading.Thread(target=forward, daemon=True).start()
+    return child.wait()
+
+
+def _is_codex_cli_invocation(arguments):
+    args = list(arguments)
+    if args in (['--version'], ['-V']):
+        return True
+    if server_arguments(args, Path('unused.sock')) is not None:
+        return True
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token in ('-c', '--config') and index + 1 < len(args):
+            index += 2
+        elif token.startswith('--config='):
+            index += 1
+        else:
+            break
+    return index < len(args) and args[index] in _AUXILIARY_CLI_COMMANDS
+
+
+def _candidate_homes():
+    seen = set()
+    candidates = []
+    configured = (os.environ.get('CODEX_HOME') or '').strip()
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    try:
+        candidates.append(Path.home() / '.codex')
+    except (OSError, RuntimeError, ValueError):
+        pass
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        key = os.path.normcase(str(resolved))
+        if key in seen:
+            continue
+        seen.add(key)
+        yield resolved
+
+
+def _verified_passthrough_config():
+    for home in _candidate_homes():
+        path = directory(home) / 'settings.json'
+        if not path.exists() and not path.is_symlink():
+            continue
+        try:
+            config = _read(path)
+            config_home = Path(config['home']).resolve()
+            if (config.get('version') != VERSION
+                    or not _same_path(path, directory(config_home) / 'settings.json')
+                    or not _same_path(config.get('launcher'), sys.executable)):
+                continue
+            cli = config.get('cli')
+            if (not isinstance(cli, str) or not cli.strip()
+                    or _same_path(cli, sys.executable) or not Path(cli).is_file()):
+                continue
+            return config
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return None
+
+
+def run_cli_passthrough(arguments):
+    """Forward auxiliary Codex CLI calls when env wrapper vars were dropped."""
+    if not arguments:
+        return None
+    via_env = _same_path(os.environ.get('CODEX_CLI_PATH'), sys.executable)
+    if not via_env and not _is_codex_cli_invocation(arguments):
+        return None
+    config = _verified_passthrough_config()
+    if config is None:
+        return None
+    return _passthrough_call(config['cli'], arguments, _child_env(config))
 
 
 def _verify(record):
@@ -76,25 +215,21 @@ def run(configuration, arguments):
     path = Path(configuration).resolve()
     config = _read(path)
     home = Path(config['home']).resolve()
-    if (config.get('version') != VERSION or path != directory(home) / 'settings.json'
-            or Path(config['launcher']).resolve() != Path(sys.executable).resolve()):
+    if (config.get('version') != VERSION or not _same_path(path, directory(home) / 'settings.json')
+            or not _same_path(config.get('launcher'), sys.executable)):
         raise ValueError('原生共享连接配置不匹配')
-    env = dict(os.environ)
-    env.pop('CMB_CODEX_DESKTOP_CONFIGURATION', None)
-    # Desktop's override bootstrap removes this variable. Preserve the exact
-    # registered package identity instead of weakening its native sandbox.
-    if config.get('sandboxFamily'):
-        env['CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY'] = config['sandboxFamily']
+    env = _child_env(config)
     cli = config['cli']
     if server_arguments(arguments, Path('unused.sock')) is None:
-        # Windows CRT process overlay can crash before forwarding startup output.
-        return subprocess.call([cli, *arguments], env=env, stdin=sys.stdin, stdout=sys.stdout,
-                               stderr=sys.stderr, creationflags=subprocess.CREATE_NO_WINDOW)
+        return _passthrough_call(cli, arguments, env)
+    if (not env.get('CODEX_HOME') or not _same_path(env['CODEX_HOME'], home)
+            or (env.get('CODEX_SQLITE_HOME') and not _same_path(env['CODEX_SQLITE_HOME'], home))):
+        return _passthrough_call(cli, arguments, env)
     from .desktop_runtime import desktop_owner
-    app, host = desktop_owner(process_identity(os.getppid()), config['application'])
-    if (Path(env.get('CODEX_HOME', '')).resolve() != home
-            or Path(env.get('CODEX_SQLITE_HOME') or home).resolve() != home):
-        raise ValueError('原生共享连接与当前 App 或配置目录不匹配')
+    try:
+        app, host = desktop_owner(process_identity(os.getppid()), config['application'])
+    except (OSError, ValueError):
+        return _passthrough_call(cli, arguments, env)
     first = sys.stdin.buffer.readline(MAX_LINE + 2)
     if len(first) > MAX_LINE + 1:
         raise ValueError('原生初始化消息过大')
@@ -104,17 +239,7 @@ def run(configuration, arguments):
         initialize = None
     if not (isinstance(initialize, dict) and initialize.get('method') == 'initialize'
             and initialize.get('params', {}).get('clientInfo', {}).get('name') == 'Codex Desktop'):
-        # This launcher can also be used by an auxiliary native CLI caller.
-        child = subprocess.Popen([cli, *arguments], env=env, stdin=subprocess.PIPE,
-                                 stdout=sys.stdout, stderr=sys.stderr, bufsize=0,
-                                 creationflags=subprocess.CREATE_NO_WINDOW)
-        try:
-            child.stdin.write(first)
-            for line in sys.stdin.buffer:
-                child.stdin.write(line)
-        finally:
-            child.stdin.close()
-        return child.wait()
+        return _passthrough_stdio(cli, arguments, env, first)
     with exclusive_lock(home, 'runtime'):
         if host is not None:
             from .desktop_host import serve

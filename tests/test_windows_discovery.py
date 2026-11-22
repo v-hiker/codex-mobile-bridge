@@ -135,6 +135,17 @@ class WindowsDiscoveryTests(unittest.TestCase):
         with patch('bridge.clients.desktop_app.sys.platform', 'win32'):
             self.assertEqual(DesktopApp.discover(runtime), str(gui))
 
+    def test_cached_runtime_discovery_ignores_parent_cli_codex_exe(self):
+        from bridge.clients.desktop_app import DesktopApp
+        runtime = self.executable('Local/OpenAI/Codex/bin/hash/codex.exe', electron=False)
+        self.executable('Local/OpenAI/Codex/bin/codex.exe', electron=False)
+        with patch('bridge.clients.desktop_app.sys.platform', 'win32'):
+            self.assertEqual(DesktopApp.discover(runtime), '')
+        gui = self.executable('Store/CodexApp/Codex.exe', electron=True)
+        store_runtime = self.executable('Store/CodexApp/resources/codex.exe', electron=False)
+        with patch('bridge.clients.desktop_app.sys.platform', 'win32'):
+            self.assertEqual(DesktopApp.discover(store_runtime), str(gui))
+
     def test_manifest_does_not_escape_package_or_select_runtime(self):
         gui = self.executable('Store/App/app/ChatGPT.exe')
         self.executable('Store/Escape/ChatGPT.exe')

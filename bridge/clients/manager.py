@@ -2272,13 +2272,32 @@ class DesktopSessions:
         cancelled = self.runtime_preparation_cancel = threading.Event()
         from bridge.clients.desktop_app import DesktopApp
         app = DesktopApp(descriptor['executable'], descriptor['dataDirectory'])
+
+        def current_app():
+            nonlocal app
+            try:
+                latest = self._descriptor('codex')
+            except (AttributeError, KeyError, OSError, ValueError):
+                return app
+            executable = (latest or {}).get('executable')
+            data_dir = (latest or {}).get('dataDirectory') or str(app.home)
+            if executable and Path(executable).is_file():
+                try:
+                    candidate = Path(executable).expanduser().resolve()
+                    home = Path(data_dir).resolve()
+                    if candidate != app.executable or home != app.home:
+                        app = DesktopApp(candidate, home)
+                except (OSError, ValueError):
+                    return app
+            return app
+
         def prepare():
             cold_start = allow_cold_start
             while not self.closed.is_set() and not cancelled.is_set():
                 with self.client_lock:
                     if not self.config.get('enabled', {}).get('codex', True):
                         return
-                self.bridge.accounts.prepare_desktop_runtime(app,
+                self.bridge.accounts.prepare_desktop_runtime(current_app(),
                     cancelled=lambda: self.closed.is_set() or cancelled.is_set(), allow_cold_start=cold_start)
                 # Continue observing after success, including a later ordinary
                 # App launch. Only gateway startup may open a stopped App.
@@ -2389,9 +2408,16 @@ class DesktopSessions:
 
     def _codex_executable(self, accounts):
         from bridge.clients.desktop_app import DesktopApp
-        # Windows may cache the CLI outside its Store-installed desktop bundle.
-        return (accounts.index.get('desktopExecutable') or DesktopApp.discover(accounts.runtime)
-                or self.config.get('discovered', {}).get('codex', {}).get('executable', ''))
+        explicit = accounts.index.get('desktopExecutable')
+        if explicit:
+            return explicit
+        row = self.config.get('discovered', {}).get('codex', {})
+        discovered = row.get('executable', '')
+        # On Windows, Store/registered discovery resolves the current GUI even
+        # when the cached CLI lives outside the package under LocalAppData.
+        if sys.platform == 'win32' and discovered and (Path(discovered).is_file() or row.get('pendingInstallation')):
+            return discovered
+        return DesktopApp.discover(accounts.runtime) or discovered
 
     def _verified(self, provider):
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):

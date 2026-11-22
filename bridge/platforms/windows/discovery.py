@@ -3,7 +3,7 @@ import os
 import re
 from pathlib import Path
 from .discovery_ext import (registered_candidates, windows_installations, launch_windows_desktop,
-                            package_registration_fingerprint)
+                            package_registration_fingerprint, _electron)
 
 
 def _version_key(path):
@@ -42,10 +42,14 @@ def candidates(provider, app_names, home, env):
 
 
 def codex_candidates(runtime):
-    for parent in list(runtime.parents)[:4]:
-        yield parent/'ChatGPT.exe'
-    for parent in list(runtime.parents)[:4]:
-        yield parent/'Codex.exe'
+    # On Windows' case-insensitive filesystem, a parent directory such as
+    # AppData\Local\OpenAI\Codex\bin can hold a standalone codex.exe CLI.
+    # Require Electron GUI evidence before accepting a parent candidate.
+    for name in ('ChatGPT.exe', 'Codex.exe'):
+        for parent in list(runtime.parents)[:4]:
+            candidate = parent / name
+            if _electron(candidate):
+                yield candidate
 
 
 def runtime_candidates(executable):
