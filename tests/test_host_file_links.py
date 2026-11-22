@@ -56,3 +56,20 @@ class HostFileLinksTests(TestCase):
         self.assertEqual(page['files'][0]['path'], '/linux/outside/report.txt')
         detail = WslEntry.timeline_read(entry, 'native-session', 'detail', cursor=session.timeline.cursor(page['rows'][0]['key']))
         self.assertEqual(detail['files'], page['files'])
+
+    def test_windows_verbatim_cwd_worktree_links_suffixes_and_plan_messages(self):
+        cwd = r'\\?\D:\Projects\YHL\jh-sop'
+        state = {'cwd': cwd, 'turns': [{'items': [
+            {'type': 'agentMessage', 'text': '[rel](docs/README.md) [col](<D:/Projects/YHL/jh-sop-worktrees/b/A.java:42:5>) [rng](<file:///C:/Users/wangy/.codex/worktrees/9844/B.java#L10-L20>) [verb](<\\\\?\\D:\\Projects\\YHL\\jh-sop\\a.txt:15>)'},
+            {'type': 'planImplementation', 'text': '[plan](<D:/Projects/YHL/jh-sop-worktrees/b/Plan.md:12-30>)'},
+            {'type': 'agentMessage', 'text': '[unc](<\\\\?\\UNC\\server\\share\\file.txt>) [esc](../secret)'},
+        ]}]}
+        rows = host_file_links(state)
+        paths = {row['path'] for row in rows}
+        self.assertEqual(paths, {
+            'D:/Projects/YHL/jh-sop/docs/README.md',
+            'D:/Projects/YHL/jh-sop-worktrees/b/A.java',
+            'C:/Users/wangy/.codex/worktrees/9844/B.java',
+            'D:/Projects/YHL/jh-sop/a.txt',
+            'D:/Projects/YHL/jh-sop-worktrees/b/Plan.md',
+        })

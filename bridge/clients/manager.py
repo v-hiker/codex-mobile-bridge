@@ -2551,16 +2551,16 @@ class DesktopSessions:
             values.update(setupStatus=phase, reason=reason)
         self._deepseek_connection(phase, reason, **values)
 
-    def _start_deepseek(self, restart=False):
+    def _start_deepseek(self, restart=False, force=False):
         try:
-            return self._prepare_deepseek(restart)
+            return self._prepare_deepseek(restart, **({'force': True} if force else {}))
         except (ValueError, OSError, subprocess.SubprocessError) as exc:
             setup = self.config.setdefault('setup', {}).get('deepseek', {})
             values = {} if setup.get('requiredBridgeRevision') else {'setupStatus': 'failed', 'reason': str(exc)}
             self._deepseek_connection('error', str(exc), **values)
             raise
 
-    def _prepare_deepseek(self, restart=False):
+    def _prepare_deepseek(self, restart=False, force=False):
         from bridge.clients.lifecycle import inspect_client, launch_deepseek
         if self.deepseek_restore_error:
             raise BridgeUnavailable(self.deepseek_restore_error)
@@ -2572,7 +2572,7 @@ class DesktopSessions:
         if self.instance is not None and not state['running']:
             from bridge.clients.instances import prepare_deepseek_profile
             prepare_deepseek_profile(self.instance.profile, row)
-        if state['running'] and not state.get('mainPids'):
+        if state['running'] and not state.get('mainPids') and not force:
             raise ValueError('检测到残留 Harness 后台实例且无法核对任务状态，请在电脑端退出 Harness 后重试')
         if not (adapter.home/'profiles/desktop/cordis.patch.yml').is_file():
             self._begin_deepseek_connection()
@@ -2594,7 +2594,7 @@ class DesktopSessions:
                                       reason=UPDATE_REASON, requiredBridgeRevision=BRIDGE_REVISION)
             return
         if state['running'] and restart:
-            self._stop_client('deepseek', row, state)
+            self._stop_client('deepseek', row, state, force=force)
         if needs_update or getattr(adapter, 'reused', False) and (restart or not state['running']):
             adapter.update_existing()
             setup['deepseek'] = {'setupStatus': 'restart-required', 'reason': UPDATE_REASON,
@@ -3307,10 +3307,6 @@ class DesktopSessions:
             raise ValueError('应用开关无效')
         if 'quitDesktop' in value and (type(value['quitDesktop']) is not bool or enabled):
             raise ValueError('应用开关无效')
-        if 'forceDesktop' in value and (type(value['forceDesktop']) is not bool or enabled
-                or value.get('quitDesktop') is not True or value.get('forceConfirmed') is not True
-                or sys.platform not in ('darwin', 'win32', 'linux') or not self.gateway_running):
-            raise ValueError('后台强制结束请求无效')
         initialize_zcode = provider == 'zcode' and value.get('initializeDesktop') is True
         if 'connectionMode' in value and (provider != 'zcode' or not enabled or
                 value['connectionMode'] not in ('private-pipe', 'official-remote') or
@@ -3320,9 +3316,20 @@ class DesktopSessions:
                 or provider not in ('claude', 'zcode') or not enabled
                 or initialize_zcode and (startup or not self.gateway_running)):
             raise ValueError('应用初始化请求无效')
+        restart_desktop = value.get('restartDesktop', False)
+        if 'restartDesktop' in value and (type(restart_desktop) is not bool or (
+                restart_desktop and (not enabled or startup or provider not in ('codex', 'deepseek', 'claude') or not self.gateway_running))):
+            raise ValueError('应用重启请求无效')
+        if 'forceDesktop' in value and (type(value['forceDesktop']) is not bool
+                or value.get('forceConfirmed') is not True
+                or sys.platform not in ('darwin', 'win32', 'linux') or not self.gateway_running
+                or not (not enabled and value.get('quitDesktop') is True
+                        or enabled and restart_desktop is True and provider in ('codex', 'deepseek', 'claude'))):
+            raise ValueError('后台强制结束请求无效')
+        force_desktop = value.get('forceDesktop') is True
         acknowledge_unavailable = value.get('acknowledgeUnavailable', False)
         if 'acknowledgeUnavailable' in value and (acknowledge_unavailable is not True or
-                provider not in ('codex', 'zcode') or not initialize_zcode and (enabled or value.get('quitDesktop') is not True) or
+                provider not in ('codex', 'zcode') or not (initialize_zcode or restart_desktop and provider == 'codex') and (enabled or value.get('quitDesktop') is not True) or
                 value.get('forceDesktop') or sys.platform not in ('darwin', 'win32', 'linux') or
                 sys.platform == 'linux' and provider != 'zcode' or
                 not self.gateway_running or provider == 'codex' and (not self.bridge or
@@ -3347,6 +3354,8 @@ class DesktopSessions:
                 return self.clients(refresh=True)
         if provider == 'deepseek' and self.config.get('deepseekManualBinding'):
             with self.client_lock, self._changing(provider):
+                if restart_desktop:
+                    raise ValueError('手动绑定不支持重启第三方客户端，请在客户端内重新加载插件')
                 if not enabled and quit_desktop:
                     raise ValueError('手动绑定仅支持停用手机接入；请在第三方客户端退出应用')
                 if enabled:
@@ -3407,7 +3416,7 @@ class DesktopSessions:
             descriptor = self._descriptor(provider)
             if enabled:
                 if provider == 'deepseek':
-                    self._start_deepseek()
+                    self._start_deepseek(restart=restart_desktop, force=force_desktop)
                 elif provider == 'zcode' and descriptor['officialRemote']:
                     state = inspect_client(descriptor)
                     if state.get('unknown') or len(state.get('mainPids', [])) > 1:
@@ -3423,7 +3432,17 @@ class DesktopSessions:
                     self._start_zcode_connection(descriptor, initialize=initialize_zcode,
                                                  acknowledge_unavailable=acknowledge_unavailable)
                 elif provider == 'claude':
-                    if value.get('initializeDesktop') is True:
+                    if restart_desktop:
+                        state = inspect_client(descriptor)
+                        if state['running']:
+                            if not force_desktop and self._claude_native_cli_busy():
+                                raise ValueError('有 Claude Code 任务运行或等待确认，请先结束任务再重启客户端')
+                            self._stop_client('claude', descriptor, state, native_confirmation=not force_desktop, force=force_desktop)
+                        result = launch_client(descriptor)
+                        if not result.get('running'):
+                            raise ValueError('客户端尚未启动，请在电脑端检查后重试')
+                        self.adapters[provider].reconnect()
+                    elif value.get('initializeDesktop') is True:
                         self.adapters[provider].connect()
                     elif self.adapters[provider].status().get('cliAvailable') is True:
                         # CLI/SSH availability does not replace a previously
@@ -3448,6 +3467,28 @@ class DesktopSessions:
                             self.adapters[provider].reconnect(launch=True)
                     else:
                         raise ValueError('此系统不支持 Claude 桌面连接')
+                elif provider == 'codex' and restart_desktop:
+                    if not descriptor.get('installed'):
+                        raise ValueError('未找到可重启的 Codex 桌面应用')
+                    state = inspect_client(descriptor)
+                    if state['running']:
+                        self._stop_client('codex', descriptor, state, native_confirmation=not force_desktop,
+                                          force=force_desktop, acknowledge_unavailable=acknowledge_unavailable)
+                    if sys.platform in ('darwin', 'win32'):
+                        from bridge.clients.codex.desktop_runtime import configure, initialization_lock, wait_stopped
+                        with initialization_lock(descriptor['dataDirectory']):
+                            wait_stopped(descriptor['dataDirectory'])
+                            if (accounts and getattr(self.bridge, 'host', 'local') == 'local'
+                                    and (sys.platform == 'darwin' or getattr(sys, 'frozen', False))):
+                                try:
+                                    configure(descriptor['dataDirectory'], descriptor['executable'], accounts.runtime)
+                                except (OSError, ValueError):
+                                    pass
+                            result = launch_client(descriptor, allow_unprepared_codex=True)
+                    else:
+                        result = launch_client(descriptor, allow_unprepared_codex=True)
+                    if not result.get('running'):
+                        raise ValueError('客户端尚未启动，请在电脑端检查后重试')
                 elif provider == 'codex' and not descriptor['installed'] and row.get('cliAvailable'):
                     pass  # CLI-only access starts its runtime on an explicit chat operation.
                 elif (startup and provider == 'codex' and accounts and sys.platform in ('darwin', 'win32')

@@ -1,25 +1,168 @@
 'use strict';
+let activeFilterDropdown=null;
 function bindChatListToolbar(toolbar){
-  const selects=[...toolbar.querySelectorAll('select')];
-  const measure=document.createElement('span');
-  measure.style.cssText='position:absolute;visibility:hidden;white-space:pre;pointer-events:none';
-  document.body.append(measure);
-  const update=()=>{
-    for(const select of selects){
-      const style=getComputedStyle(select);
-      measure.style.font=style.font;
-      measure.style.letterSpacing=style.letterSpacing;
-      measure.textContent=select.selectedOptions[0]?.textContent||'';
-      // Reserve the native arrow and its spacing; only the selected label determines width.
-      select.style.width=Math.ceil(measure.getBoundingClientRect().width+30)+'px';
+  if(!toolbar||toolbar.dataset?.filterBound)return;
+  if(toolbar.dataset)toolbar.dataset.filterBound='1';
+  const selectDescriptor=typeof HTMLSelectElement!=='undefined'?Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value'):null;
+  const hiddenDescriptor=typeof HTMLElement!=='undefined'?Object.getOwnPropertyDescriptor(HTMLElement.prototype,'hidden'):null;
+  const setup=select=>{
+    select.classList.add('filter-select-native');
+    select.tabIndex=-1;
+    select.setAttribute('aria-hidden','true');
+    select.style.width='';
+    const trigger=document.createElement('button');
+    trigger.type='button';
+    trigger.className='filter-dropdown-trigger';
+    trigger.setAttribute('aria-haspopup','listbox');
+    trigger.setAttribute('aria-expanded','false');
+    const label=document.createElement('span');
+    label.className='filter-dropdown-label';
+    const caret=document.createElement('span');
+    caret.className='filter-dropdown-caret';
+    caret.setAttribute('aria-hidden','true');
+    trigger.append(label,caret);
+    select.after(trigger);
+    let menu=null,cleanup=null,frame=0;
+    const close=(restoreFocus=false)=>{
+      if(!menu)return;
+      const currentMenu=menu;menu=null;
+      trigger.setAttribute('aria-expanded','false');
+      cleanup?.();cleanup=null;
+      currentMenu.remove();
+      if(activeFilterDropdown===close)activeFilterDropdown=null;
+      if(restoreFocus)trigger.focus();
+    };
+    const renderMenu=()=>{
+      if(!menu)return;
+      menu.replaceChildren();
+      const options=[...select.options];
+      const currentValue=select.value;
+      for(const option of options){
+        const item=document.createElement('button');
+        item.type='button';
+        item.className='filter-dropdown-item';
+        item.setAttribute('role','option');
+        const selected=option.value===currentValue;
+        item.setAttribute('aria-selected',String(selected));
+        item.disabled=!!option.disabled;
+        const text=document.createElement('span');
+        text.className='filter-dropdown-item-label';
+        text.textContent=option.textContent||'';
+        const check=document.createElement('span');
+        check.className='filter-dropdown-check';
+        check.setAttribute('aria-hidden','true');
+        item.append(text,check);
+        item.onclick=event=>{
+          event.preventDefault();event.stopPropagation();
+          if(option.disabled)return;
+          const changed=select.value!==option.value;
+          select.value=option.value;
+          close(true);
+          sync();
+          if(changed)select.dispatchEvent(new Event('change',{bubbles:true}));
+        };
+        menu.append(item);
+      }
+    };
+    const position=()=>{
+      if(!menu)return;
+      const rect=trigger.getBoundingClientRect();
+      menu.style.minWidth=Math.max(136,Math.round(rect.width))+'px';
+      const menuRect=menu.getBoundingClientRect();
+      const vw=typeof innerWidth==='number'?innerWidth:800,vh=typeof innerHeight==='number'?innerHeight:600;
+      const spaceBelow=vh-rect.bottom-12,spaceAbove=rect.top-12;
+      const top=spaceBelow>=menuRect.height||spaceBelow>=spaceAbove
+        ?Math.min(Math.max(8,rect.bottom+6),Math.max(8,vh-menuRect.height-8))
+        :Math.max(8,rect.top-menuRect.height-6);
+      const left=Math.max(8,Math.min(rect.left,vw-menuRect.width-8));
+      menu.style.top=Math.round(top)+'px';
+      menu.style.left=Math.round(left)+'px';
+    };
+    const open=()=>{
+      if(trigger.disabled||trigger.hidden)return;
+      if(activeFilterDropdown&&activeFilterDropdown!==close)activeFilterDropdown(false);
+      activeFilterDropdown=close;
+      menu=document.createElement('div');
+      menu.className='filter-dropdown-menu';
+      menu.setAttribute('role','listbox');
+      const baseLabel=select.getAttribute('aria-label');
+      if(baseLabel)menu.setAttribute('aria-label',baseLabel);
+      renderMenu();
+      document.body.append(menu);
+      trigger.setAttribute('aria-expanded','true');
+      position();
+      const onPointerDown=event=>{if(!menu?.contains(event.target)&&!trigger.contains(event.target))close(false);};
+      const onKeyDown=event=>{
+        if(!menu)return;
+        const items=[...menu.querySelectorAll('.filter-dropdown-item:not(:disabled)')];
+        const current=items.indexOf(document.activeElement);
+        if(event.key==='Escape'){event.preventDefault();event.stopPropagation();close(true);}
+        else if(event.key==='Tab'){close(false);}
+        else if(event.key==='ArrowDown'){event.preventDefault();(items[(current+1)%items.length]||items[0])?.focus();}
+        else if(event.key==='ArrowUp'){event.preventDefault();(items[(current<=0?items.length:current)-1])?.focus();}
+        else if(event.key==='Home'){event.preventDefault();items[0]?.focus();}
+        else if(event.key==='End'){event.preventDefault();items.at(-1)?.focus();}
+      };
+      const onResize=()=>{close(false);};
+      const onScroll=event=>{if(menu&&event.target instanceof Node&&menu.contains(event.target))return;close(false);};
+      document.addEventListener('pointerdown',onPointerDown,true);
+      document.addEventListener('keydown',onKeyDown,true);
+      window.addEventListener('resize',onResize);
+      window.addEventListener('scroll',onScroll,true);
+      cleanup=()=>{
+        document.removeEventListener('pointerdown',onPointerDown,true);
+        document.removeEventListener('keydown',onKeyDown,true);
+        window.removeEventListener('resize',onResize);
+        window.removeEventListener('scroll',onScroll,true);
+      };
+      const activeItem=menu.querySelector('[aria-selected="true"]:not(:disabled)')||menu.querySelector('.filter-dropdown-item:not(:disabled)');
+      activeItem?.focus();
+    };
+    const sync=()=>{
+      const options=[...select.options];
+      const selected=select.selectedOptions?.[0]||options.find(option=>option.value===select.value)||options[0];
+      const text=selected?.textContent||'';
+      if(label.textContent!==text)label.textContent=text;
+      trigger.hidden=!!select.hidden;
+      trigger.disabled=!!select.disabled;
+      if(trigger.hidden&&menu)close(false);
+      trigger.dataset.active=String((select.id==='source-filter'||select.classList.contains('ds-surface'))&&!!select.value&&select.value!=='all');
+      const baseLabel=select.getAttribute('aria-label')||'';
+      if(baseLabel)trigger.setAttribute('aria-label',text?baseLabel+'：'+text:baseLabel);
+      if(menu)renderMenu();
+    };
+    const scheduleSync=()=>{
+      if(typeof requestAnimationFrame!=='function'){sync();return;}
+      cancelAnimationFrame(frame);
+      frame=requestAnimationFrame(sync);
+    };
+    trigger.onclick=event=>{
+      event.preventDefault();event.stopPropagation();
+      if(menu)close(false);else open();
+    };
+    if(selectDescriptor?.get&&selectDescriptor?.set){
+      Object.defineProperty(select,'value',{
+        configurable:true,
+        get(){return selectDescriptor.get.call(this);},
+        set(value){selectDescriptor.set.call(this,value);sync();}
+      });
     }
+    if(hiddenDescriptor?.get&&hiddenDescriptor?.set){
+      Object.defineProperty(select,'hidden',{
+        configurable:true,
+        get(){return hiddenDescriptor.get.call(this);},
+        set(value){hiddenDescriptor.set.call(this,value);sync();}
+      });
+    }
+    if(typeof MutationObserver!=='undefined'){
+      new MutationObserver(sync).observe(select,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['hidden','disabled','aria-label']});
+    }
+    select.addEventListener('change',sync);
+    document.addEventListener('bridge-language',scheduleSync);
+    sync();
+    scheduleSync();
   };
-  const later=()=>requestAnimationFrame(update);
-  toolbar.addEventListener('change',update);
-  document.addEventListener('bridge-language',later);
-  window.addEventListener('resize',update);
-  if(typeof ResizeObserver!=='undefined')new ResizeObserver(update).observe(toolbar);
-  later();
+  for(const select of toolbar.querySelectorAll('select'))setup(select);
 }
 function isCodexEntry(id){return typeof id==='string'&&/^(?:wsl|codex):[0-9a-f]{32}$/.test(id);}
 function isCodexClient(id){return id==='codex'||isCodexEntry(id);}
@@ -239,7 +382,7 @@ class ClientNavigation {
   withClientEnabled(id,enabled){return this.clients.map(client=>{if(client.id==='codex'&&client.entries?.length){const entries=client.entries.map(entry=>(entry.id==='desktop'?'codex':entry.id)===id?{...entry,enabled}:entry);return {...client,entries,desktopEnabled:entries.find(entry=>entry.id==='desktop')?.enabled,enabled:entries.some(entry=>entry.enabled)};}if(client.id==='claude'&&client.entries?.length){const entries=client.entries.map(entry=>entry.id===id?{...entry,enabled}:entry),nativeEnabled=client.id===id?enabled:client.nativeEnabled??client.enabled;return {...client,entries,nativeEnabled,enabled:nativeEnabled||entries.some(entry=>entry.enabled)};}return client.id===id?{...client,enabled}:client;});}
   hasUncertain(){return [...(this.operationFailures?.values()||[])].some(value=>value.uncertain);}
   syncViewClients(){this.view.setClientStates?.(this.clients.map(client=>({...client,operationFailure:this.operationFailures?.get(client.id),operationUncertain:this.hasUncertain(),pendingEnable:this.gatewayRunning!==false&&this.pending.has(client.id)&&client.enabled})),id=>this.toggle(id,true),id=>this.initialize(id),()=>this.refresh(),id=>this.reconnect(id));}
-  retryOperation(id){const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;return failure.action==='connect-wsl'?this.connectWsl(id):failure.action==='initialize'?this.initialize(id):this.toggle(id,failure.action==='enable',{connectionMode:failure.connectionMode});}
+  retryOperation(id){const failure=this.operationFailures?.get(id);if(!failure||this.hasUncertain())return;return failure.action==='connect-wsl'?this.connectWsl(id):failure.action==='initialize'?this.initialize(id):failure.action==='restart'?this.restart(id):this.toggle(id,failure.action==='enable',{connectionMode:failure.connectionMode});}
   async choose(id,{activate=true,fromStatus=false,loadList=true}={}){
     if(/^wsl-claude:[0-9a-f]{32}$/.test(id))id='claude';
     if(!fromStatus)this.pendingChatLink=null;
@@ -294,6 +437,13 @@ class ClientNavigation {
     try{confirmed=await ClientLifecycle.chooseInitialize(client);}finally{this.choosing=null;this.paint();}
     if(confirmed)return this.toggle(id,true,{initialization:confirmed});
   }
+  async restart(id){
+    const client=this.managementClients().find(row=>row.id===id);
+    if(this.gatewayRunning===false||this.pending.size||this.choosing||this.hasUncertain()||!client)return;
+    this.choosing=id;++this.revision;this.paint();let confirmed=false;
+    try{confirmed=await ClientLifecycle.chooseRestart(client);}finally{this.choosing=null;this.paint();}
+    if(confirmed)return this.toggle(id,true,{restartDesktop:confirmed});
+  }
   async selectConnectionMode(id,mode){
     const client=this.managementClients().find(row=>row.id===id);if(!client||this.pending.size||this.choosing||this.hasUncertain())return;
     this.choosing=id;++this.revision;this.paint();let accepted;
@@ -312,7 +462,7 @@ class ClientNavigation {
     this.accountManagementRenderers??=new Set();this.accountManagementRenderers.add(render);render();
     return ()=>this.accountManagementRenderers.delete(render);
   }
-  async toggle(id,enabled,{initialization=false,connectionMode}={}){
+  async toggle(id,enabled,{initialization=false,connectionMode,restartDesktop=false}={}){
     const client=this.managementClients().find(row=>row.id===id);if(this.pending.size||this.choosing||this.hasUncertain()||!client||(enabled&&!(client.selectable??client.configured)))return;
     let quitDesktop=false;
     if(!enabled&&this.gatewayRunning!==false&&client.canQuitDesktop!==false){
@@ -321,15 +471,16 @@ class ClientNavigation {
       finally{this.choosing=null;this.paint();}
       if(quitDesktop===null)return;
     }
-    const intent={...ClientLifecycle.initializationFields(initialization),...(connectionMode?{connectionMode}:{})};
+    const forceRestart=restartDesktop==='force';
+    const intent={...ClientLifecycle.initializationFields(initialization),...(connectionMode?{connectionMode}:{}),...(restartDesktop?{restartDesktop:true}:{}),...(restartDesktop==='recovery'?{acknowledgeUnavailable:true}:{}),...(forceRestart?{forceDesktop:true,forceConfirmed:true}:{})};
     const acknowledgeUnavailable=quitDesktop==='recovery',forceDesktop=quitDesktop==='force';quitDesktop=quitDesktop===true||forceDesktop||acknowledgeUnavailable;
     const before=this.clients.map(c=>({...c})),previous=this.provider;
     this.operationFailures??=new Map();this.operationFailures.delete(id);let failed=false;
-    this.pending.add(id);this.pendingQuitDesktop=quitDesktop;this.pendingForceDesktop=forceDesktop;++this.revision;
+    this.pending.add(id);this.pendingQuitDesktop=quitDesktop;this.pendingForceDesktop=forceDesktop||forceRestart;this.pendingRestartDesktop=!!restartDesktop;++this.revision;
     this.applyClients({clients:this.withClientEnabled(id,enabled)});
     try{const data=await ClientLifecycle.request(signal=>this.request('/api/clients',{provider:id,enabled,...(!enabled?{quitDesktop}:{}),...(forceDesktop?{forceDesktop:true,forceConfirmed:true}:{}),...(acknowledgeUnavailable?{acknowledgeUnavailable:true}:{}),...intent},signal),{timeout:this.lifecycleTimeout??45000});this.applyClients(data);if(enabled&&id==='codex'&&previous===null)this.view.onSelect?.('codex');}
-    catch(error){failed=true;this.operationFailures.set(id,{...ClientLifecycle.failure(initialization?'initialize':enabled?'enable':forceDesktop?'force':quitDesktop?'quit':'disable',error),connectionMode:intent.connectionMode});this.provider=previous;this.applyClients({clients:before});throw error;}
-    finally{this.pending.delete(id);this.pendingQuitDesktop=false;this.pendingForceDesktop=false;++this.revision;this.paint();if(failed)await this.refresh();}
+    catch(error){failed=true;this.operationFailures.set(id,{...ClientLifecycle.failure(restartDesktop?'restart':initialization?'initialize':enabled?'enable':forceDesktop?'force':quitDesktop?'quit':'disable',error),connectionMode:intent.connectionMode});this.provider=previous;this.applyClients({clients:before});throw error;}
+    finally{this.pending.delete(id);this.pendingQuitDesktop=false;this.pendingForceDesktop=false;this.pendingRestartDesktop=false;++this.revision;this.paint();if(failed)await this.refresh();}
   }
   async connectWsl(id){
     const client=this.managementClients().find(row=>row.id===id);
@@ -392,7 +543,7 @@ class ClientNavigation {
   }
   managementState(client){
     if(this.operationFailures?.get(client.id)?.uncertain)return '结果待确认';
-    if(this.pending.has(client.id))return this.gatewayRunning===false?'正在保存…':client.enabled?'开启中…':this.pendingForceDesktop?'正在后台强制结束…':this.pendingQuitDesktop?'正在退出应用…':'正在停用接入…';
+    if(this.pending.has(client.id))return this.gatewayRunning===false?'正在保存…':this.pendingRestartDesktop?(this.pendingForceDesktop?'正在强制重启应用…':'正在重启应用…'):client.enabled?'开启中…':this.pendingForceDesktop?'正在后台强制结束…':this.pendingQuitDesktop?'正在退出应用…':'正在停用接入…';
     if(this.gatewayRunning===false)return client.enabled?'已选择，下次启动生效':'未选择，下次启动生效';
     return client.enabled?'已启用':'未启用';
   }
@@ -408,27 +559,30 @@ class ClientNavigation {
       let parent=list;if(client.parentId){if(!groups.has(client.parentId)){const group=document.createElement('section'),title=document.createElement('h3'),name=client.parentId==='codex'?'Codex':'Claude';group.className='client-management-group';group.setAttribute('aria-label',name);title.textContent=name;group.append(title);list.append(group);groups.set(client.parentId,group);}parent=groups.get(client.parentId);}
       const row=document.createElement('div');row.className='client-management-row';row.dataset.clientId=client.id;
       const text=document.createElement('span'),name=document.createElement('strong'),status=document.createElement('small'),reason=document.createElement('small'),control=document.createElement('span'),label=document.createElement('span'),toggle=document.createElement('button');
-      const state=this.connection(client),failure=this.operationFailures?.get(client.id),message=failure?ClientLifecycle.failureMessage(failure):state.reason;name.textContent=client.parentId==='codex'&&client.id==='codex'?'APP / CLI':client.name;status.textContent=BridgeI18n.t(state.label)+(state.modeLabel?' · '+BridgeI18n.t(state.modeLabel):'');status.setAttribute('role','status');status.setAttribute('aria-busy',String(state.waiting));status.classList.toggle('client-connection-waiting',state.waiting);reason.textContent=BridgeI18n.t(message);reason.hidden=!message||reason.textContent===status.textContent;text.append(name);if(client.description){const description=document.createElement('small');description.textContent=BridgeI18n.t(client.description);text.append(description);}text.append(status,reason);
+      const state=this.connection(client),failure=this.operationFailures?.get(client.id),message=failure?ClientLifecycle.failureMessage(failure):state.reason;name.textContent=client.parentId==='codex'&&client.id==='codex'?'APP / CLI':client.name;status.textContent=BridgeI18n.t(state.label)+(state.modeLabel?' · '+BridgeI18n.t(state.modeLabel):'');status.setAttribute('role','status');status.setAttribute('aria-busy',String(state.waiting));status.classList.toggle('client-connection-waiting',state.waiting);status.dataset.status=state.ready?'ready':state.error?'error':state.waiting?'waiting':client.running?'running':'idle';reason.textContent=BridgeI18n.t(message);reason.hidden=!message||reason.textContent===status.textContent;text.append(name);if(client.description){const description=document.createElement('small');description.textContent=BridgeI18n.t(client.description);text.append(description);}text.append(status,reason);
       control.className='client-management-control';label.className='client-toggle-status';label.setAttribute('role','status');label.textContent=BridgeI18n.t(this.managementState(client));
       toggle.type='button';toggle.className='client-management-switch';toggle.setAttribute('role','switch');toggle.setAttribute('aria-checked',String(client.enabled));toggle.setAttribute('aria-label',BridgeI18n.t('启用')+' '+client.name);toggle.setAttribute('aria-busy',String(this.pending.has(client.id)));toggle.disabled=(!client.enabled&&!(client.selectable??client.configured))||this.pending.size>0||!!this.choosing||this.hasUncertain();
       toggle.append(document.createElement('span'));control.append(toggle,label);row.append(this.icon(client.id),text,control);parent.append(row);
       toggle.onclick=()=>this.toggle(client.id,!client.enabled).catch(error=>this.notify(error.message));
-      if(!window.BridgeSharedRelay&&!failure&&(state.canConnectWsl||this.connectingWsl===client.id)&&this.gatewayRunning!==false){const connect=document.createElement('button');connect.type='button';connect.textContent=BridgeI18n.t(this.connectingWsl===client.id?'正在连接，请稍候…':'启动并连接 WSL');connect.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();connect.onclick=()=>this.connectWsl(client.id).catch(error=>this.notify(error.message));control.append(connect);}
+      if(!window.BridgeSharedRelay&&!failure&&(state.canConnectWsl||this.connectingWsl===client.id)&&this.gatewayRunning!==false){const connect=document.createElement('button');connect.type='button';connect.className='client-action-primary';connect.textContent=BridgeI18n.t(this.connectingWsl===client.id?'正在连接，请稍候…':'启动并连接 WSL');connect.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();connect.onclick=()=>this.connectWsl(client.id).catch(error=>this.notify(error.message));control.append(connect);}
       if(ClientLifecycle.connectionModes(client).length>1){const methods=document.createElement('div');text.append(methods);ClientLifecycle.mountConnectionModes(methods).update(client,{disabled:this.pending.size>0||!!this.choosing||this.hasUncertain(),select:mode=>this.selectConnectionMode(client.id,mode).catch(error=>this.notify(error.message))});}
-      if(!client.enabled&&client.running&&client.canQuitDesktop!==false&&this.gatewayRunning!==false){const quit=document.createElement('button');quit.type='button';quit.textContent=BridgeI18n.t('关闭电脑 App…');quit.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();quit.onclick=()=>this.toggle(client.id,false).catch(error=>this.notify(error.message));control.append(quit);}
-      if(client.enabled){const open=document.createElement('button');open.type='button';open.textContent=BridgeI18n.t('查看聊天');open.onclick=()=>{manager.dialog.close();this.choose(client.id).catch(error=>this.notify(error.message));};control.append(open);}
-      if(failure){const retry=document.createElement('button');retry.type='button';retry.textContent=BridgeI18n.t(failure.uncertain?'刷新状态':ClientLifecycle.retryLabel(failure.action));retry.disabled=this.pending.size>0||!!this.choosing||!!this.loading||(!failure.uncertain&&this.hasUncertain());retry.onclick=()=>Promise.resolve(failure.uncertain?this.refresh():this.retryOperation(client.id)).catch(error=>this.notify(error.message));control.append(retry);}
-      if(!failure&&state.retryable&&this.gatewayRunning!==false){const retry=document.createElement('button');retry.type='button';retry.textContent=BridgeI18n.t('重试连接');retry.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();retry.onclick=()=>this.toggle(client.id,true).catch(error=>this.notify(error.message));control.append(retry);}
-      if(!failure&&state.canReconnect&&this.gatewayRunning!==false){const reconnect=document.createElement('button');reconnect.type='button';reconnect.textContent=BridgeI18n.t('重新连接');reconnect.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();reconnect.onclick=()=>this.reconnect(client.id).catch(error=>this.notify(error.message));control.append(reconnect);}
-      if(!failure&&state.canInitialize&&this.gatewayRunning!==false){const initialize=document.createElement('button');initialize.type='button';initialize.textContent=BridgeI18n.t(state.initializeLabel);initialize.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();initialize.onclick=()=>this.initialize(client.id).catch(error=>this.notify(error.message));control.append(initialize);}
-      if(!failure&&state.canStartDesktop&&this.gatewayRunning!==false){const start=document.createElement('button');start.type='button';start.textContent=BridgeI18n.t('启动 Desktop');start.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();start.onclick=()=>this.initialize(client.id).catch(error=>this.notify(error.message));control.append(start);}
+      const family=ClientIdentity.family(client.id),restartable=['codex','deepseek','claude'].includes(family)&&!['wsl-cli','wsl-claude-cli'].includes(client.kind)&&client.bindingMode!=='manual'&&client.canQuitDesktop!==false&&this.gatewayRunning!==false&&client.installed!==false&&client.running===true&&(client.enabled||(client.selectable??client.configured))&&!state.waiting&&!failure&&!state.canInitialize&&!state.canStartDesktop&&(family!=='deepseek'||state.ready||client.canForceQuit===true);
+      if(client.enabled){const open=document.createElement('button');open.type='button';open.className='client-action-primary';open.textContent=BridgeI18n.t('查看聊天');open.onclick=()=>{manager.dialog.close();this.choose(client.id).catch(error=>this.notify(error.message));};control.append(open);}
+      if(restartable){const reconnectRestart=!state.ready||client.desktopRestartRecommended===true;const restart=document.createElement('button');restart.type='button';restart.className=reconnectRestart?'client-action-primary':'client-action-secondary';restart.textContent=BridgeI18n.t(reconnectRestart?'重启并接入':'重启 App');restart.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();restart.onclick=()=>this.restart(client.id).catch(error=>this.notify(error.message));control.append(restart);}
+      if(!client.enabled&&client.running&&client.canQuitDesktop!==false&&this.gatewayRunning!==false){const quit=document.createElement('button');quit.type='button';quit.className='client-action-danger';quit.textContent=BridgeI18n.t('关闭电脑 App…');quit.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();quit.onclick=()=>this.toggle(client.id,false).catch(error=>this.notify(error.message));control.append(quit);}
+      if(failure){const retry=document.createElement('button');retry.type='button';retry.className='client-action-primary';retry.textContent=BridgeI18n.t(failure.uncertain?'刷新状态':ClientLifecycle.retryLabel(failure.action));retry.disabled=this.pending.size>0||!!this.choosing||!!this.loading||(!failure.uncertain&&this.hasUncertain());retry.onclick=()=>Promise.resolve(failure.uncertain?this.refresh():this.retryOperation(client.id)).catch(error=>this.notify(error.message));control.append(retry);}
+      if(!failure&&state.retryable&&this.gatewayRunning!==false){const retry=document.createElement('button');retry.type='button';retry.className='client-action-primary';retry.textContent=BridgeI18n.t('重试连接');retry.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();retry.onclick=()=>this.toggle(client.id,true).catch(error=>this.notify(error.message));control.append(retry);}
+      if(!failure&&state.canReconnect&&this.gatewayRunning!==false){const reconnect=document.createElement('button');reconnect.type='button';reconnect.className='client-action-primary';reconnect.textContent=BridgeI18n.t('重新连接');reconnect.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();reconnect.onclick=()=>this.reconnect(client.id).catch(error=>this.notify(error.message));control.append(reconnect);}
+      if(!failure&&state.canInitialize&&this.gatewayRunning!==false){const initialize=document.createElement('button');initialize.type='button';initialize.className='client-action-primary';initialize.textContent=BridgeI18n.t(state.initializeLabel);initialize.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();initialize.onclick=()=>this.initialize(client.id).catch(error=>this.notify(error.message));control.append(initialize);}
+      if(!failure&&state.canStartDesktop&&this.gatewayRunning!==false){const start=document.createElement('button');start.type='button';start.className='client-action-primary';start.textContent=BridgeI18n.t('启动 Desktop');start.disabled=this.pending.size>0||!!this.choosing||this.hasUncertain();start.onclick=()=>this.initialize(client.id).catch(error=>this.notify(error.message));control.append(start);}
     }
     note.textContent=BridgeI18n.t(this.gatewayRunning===false?'网关未启动，开关仅保存下次启动时的选择，不会打开或退出应用。':'安装和登录请在电脑端完成。关闭接入可保留或退出电脑 App。macOS Claude 默认后台启动并尝试恢复已有连接；“初始化连接”经确认后使用电脑前台。Windows 优先尝试后台初始化。')+' '+BridgeI18n.t(ClientLifecycle.sessionNotice(this.windowsSession));
   }
   openManager(){
     if(this.manager?.dialog.open)return;
     const dialog=this.view.dialog('应用管理'),list=document.createElement('div'),note=document.createElement('p');note.className='muted';
-    if(this.wslSupported){const scan=document.createElement('button');scan.type='button';scan.textContent=BridgeI18n.t('扫描 WSL 应用');scan.onclick=()=>this.scanWsl(scan);dialog.append(scan);}
+    dialog.classList?.add?.('client-management-dialog');
+    if(this.wslSupported){const scan=document.createElement('button');scan.type='button';scan.className='client-management-scan';scan.textContent=BridgeI18n.t('扫描 WSL 应用');scan.onclick=()=>this.scanWsl(scan);dialog.append(scan);}
     const title=dialog.querySelector('.picker-head h2');title.classList.add('dialog-content-start');title.tabIndex=-1;title.autofocus=true;dialog.append(list,note);this.manager={dialog,list,note};
     this.createNetworkAdaptation();
     dialog.addEventListener('close',()=>{if(this.manager?.dialog===dialog)this.manager=null;});dialog.showModal();this.renderManager();this.refresh();this.readNetworkAdaptation();

@@ -91,7 +91,7 @@ window.BridgeClipboard=(()=>{
             }
             finally{retry.disabled=false;}
           };
-          const close=document.createElement('button');close.type='button';close.textContent=actionText('完成');close.onclick=()=>dialog.close();
+          const close=document.createElement('button');close.type='button';close.className='plain';close.textContent=actionText('完成');close.onclick=()=>dialog.close();
           actions.append(retry,close);dialog.append(heading,help,input,actions);document.body.append(dialog);
           dialog.onclose=()=>{dialog.remove();button.focus({preventScroll:true});};dialog.showModal();input.focus();input.select();input.setSelectionRange(0,text.length);
           button.textContent=label;

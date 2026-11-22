@@ -68,7 +68,7 @@ class ContextUsageControl {
     }
     if(previous&&!usage){line('最近一次模型输入',number(previous.usedTokens));line('统计最近一次请求的输入与缓存 Token；不包含尚未发送的内容。');}
     if(this.onCompact&&this.state.capabilities?.compact===true){
-      const stateId=this.state.id,button=this.compactButton=document.createElement('button');button.type='button';button.textContent=BridgeI18n.t('压缩上下文');button.disabled=!this.state.connected||!!this.state.busy;
+      const stateId=this.state.id,button=this.compactButton=document.createElement('button');button.type='button';button.className='primary';button.textContent=BridgeI18n.t('压缩上下文');button.disabled=!this.state.connected||!!this.state.busy;
       button.onclick=async()=>{if(button.disabled||stateId!==this.state?.id)return;button.disabled=true;try{if(await this.onCompact())dialog.close();}finally{if(dialog.open&&stateId===this.state?.id)button.disabled=!this.state.connected||this.state.capabilities?.compact!==true||!!this.state.busy;}};
       dialog.append(button);
     }
@@ -80,7 +80,7 @@ class ContextUsageControl {
 // Linux Desktop and native CLI capability picker; other sessions keep their existing flow.
 async function permissionPicker(dialog,{load,save,isCurrent,onSaved,nativeCli=false}){
   const t=BridgeI18n.t,options=document.createElement('div'),status=document.createElement('p'),refresh=document.createElement('button');
-  status.className='muted';status.setAttribute('role','status');refresh.type='button';refresh.textContent=t('刷新');
+  status.className='muted';status.setAttribute('role','status');refresh.type='button';refresh.className='plain';refresh.textContent=t('刷新');
   dialog.append(options,status,refresh);
   let busy=false,revision=0,buttons=[];
   const valid=()=>dialog.open&&isCurrent();

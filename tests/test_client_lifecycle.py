@@ -582,6 +582,82 @@ class ClientLifecycleTests(unittest.TestCase):
         clients.assert_called_once_with()
         self.assertFalse(self.manager.enabled('claude'))
 
+    def test_explicit_desktop_restart_restarts_managed_clients_and_rejects_invalid_requests(self):
+        with patch.object(self.manager, '_prepare_deepseek', side_effect=lambda restart=False: self.stop_dsh(self.manager._descriptor('deepseek'), self.dsh, state=self.inspect(None)) if restart else None):
+            self.manager.toggle_client({'provider': 'deepseek', 'enabled': True, 'restartDesktop': True})
+        self.stop_dsh.assert_called_once()
+        self.stop_dsh.reset_mock(); self.stop.reset_mock()
+
+        self.claude.reconnect.reset_mock()
+        self.running = True
+        self.manager.toggle_client({'provider': 'claude', 'enabled': True, 'restartDesktop': True})
+        self.stop.assert_called_once()
+        self.launch.assert_called_once()
+        self.claude.reconnect.assert_called_once_with()
+        self.stop.reset_mock(); self.launch.reset_mock()
+
+        self.bridge.desktop_restart_recommended = lambda: True
+        self.running = True
+        from contextlib import nullcontext
+        with patch('bridge.clients.codex.desktop_runtime.configure') as configure, \
+             patch('bridge.clients.codex.desktop_runtime.wait_stopped') as wait_stopped, \
+             patch('bridge.clients.codex.desktop_runtime.initialization_lock', return_value=nullcontext()):
+            self.manager.toggle_client({'provider': 'codex', 'enabled': True, 'restartDesktop': True, 'acknowledgeUnavailable': True})
+        self.stop.assert_called_once()
+        wait_stopped.assert_called_once()
+        configure.assert_called_once()
+        self.launch.assert_called_once()
+        self.assertEqual(self.launch.call_args.kwargs.get('allow_unprepared_codex'), True)
+
+        for bad in (
+            {'provider': 'deepseek', 'enabled': False, 'restartDesktop': True},
+            {'provider': 'deepseek', 'enabled': True, 'restartDesktop': 'yes'},
+            {'provider': 'antigravity', 'enabled': True, 'restartDesktop': True},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.manager.toggle_client(bad)
+        self.manager.config['deepseekManualBinding'] = True
+        with self.assertRaisesRegex(ValueError, '手动绑定不支持重启'):
+            self.manager.toggle_client({'provider': 'deepseek', 'enabled': True, 'restartDesktop': True})
+
+    def test_explicit_force_restart_bypasses_idle_checks_and_validates_confirmation(self):
+        native = Mock()
+        self.running = True
+        self.dsh.home = self.root
+        with patch('bridge.clients.lifecycle.force_stop_client', native), \
+             patch('bridge.clients.lifecycle.launch_deepseek', return_value={'running': True, 'launched': True}) as launch_dsh, \
+             patch('bridge.clients.manager.sys.platform', 'win32'):
+            self.manager.toggle_client({
+                'provider': 'deepseek', 'enabled': True, 'restartDesktop': True,
+                'forceDesktop': True, 'forceConfirmed': True,
+            })
+        native.assert_called_once()
+        self.assertEqual(native.call_args.args[0]['id'], 'deepseek')
+        self.stop_dsh.assert_not_called()
+        launch_dsh.assert_called_once()
+        self.assertTrue(self.manager.enabled('deepseek'))
+
+        native.reset_mock(); self.launch.reset_mock(); self.stop.reset_mock()
+        self.claude.cli.busy.return_value = True
+        with patch('bridge.clients.lifecycle.force_stop_client', native), \
+             patch('bridge.clients.manager.sys.platform', 'win32'):
+            self.manager.toggle_client({
+                'provider': 'claude', 'enabled': True, 'restartDesktop': True,
+                'forceDesktop': True, 'forceConfirmed': True,
+            })
+        native.assert_called_once()
+        self.assertEqual(native.call_args.args[0]['id'], 'claude')
+        self.stop.assert_not_called()
+        self.launch.assert_called_once()
+
+        for bad in (
+            {'provider': 'deepseek', 'enabled': True, 'forceDesktop': True, 'forceConfirmed': True},
+            {'provider': 'deepseek', 'enabled': True, 'restartDesktop': True, 'forceDesktop': True},
+            {'provider': 'codex', 'enabled': True, 'restartDesktop': True, 'forceDesktop': True, 'forceConfirmed': True, 'acknowledgeUnavailable': True},
+        ):
+            with self.subTest(bad=bad), patch('bridge.clients.manager.sys.platform', 'win32'), self.assertRaises(ValueError):
+                self.manager.toggle_client(bad)
+
     def test_windows_claude_unknown_processes_block_native_confirmation(self):
         self.claude.status.return_value = {'connected': False}
         state = {**self.inspect(None), 'unknown': True}

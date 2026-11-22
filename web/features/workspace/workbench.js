@@ -339,8 +339,9 @@ class Workbench {
     for(const event of ['wheel','touchstart','pointerdown'])list.addEventListener(event,state.motionInterrupt,{passive:true});
   }
   locateValid(state) {
+    const matchDir=state.samePath?state.samePath(state.session.directory,state.directory):state.session.directory===state.directory;
     return this.locateState===state&&this.current===state.session&&this.sessions.get(state.session.key)===state.session&&
-      state.session.files.includes(state.tab)&&this.isVisible(state.session,state.tab)&&state.session.directory===state.directory;
+      state.session.files.includes(state.tab)&&this.isVisible(state.session,state.tab)&&matchDir;
   }
   async locate(session,path) {
     if(session!==this.current)return;
@@ -352,26 +353,27 @@ class Workbench {
       path=info.absolutePath;
     }
     path=path.replaceAll('\\','/');
+    const windows=/^[a-z]:\//i.test(path),samePath=(a,b)=>a===b||(windows&&typeof a==='string'&&typeof b==='string'&&a.toLowerCase()===b.toLowerCase());
     const slash=path.lastIndexOf('/'),directory=path.slice(0,slash)||(path.startsWith('/')?'/':'');
     const parent=/^[a-z]:$/i.test(directory)?directory+'/':directory;
     let tab=session.files.find(t=>t.id==='files');
-    const loadedRow=tab?.list&&Array.from(tab.list.children).find(row=>row.dataset.path===path);
-    const reusable=tab?.loaded&&tab.list&&session.directory===parent&&session.search===''&&
+    const loadedRow=tab?.list&&Array.from(tab.list.children).find(row=>samePath(row.dataset.path,path));
+    const reusable=tab?.loaded&&tab.list&&samePath(session.directory,parent)&&session.search===''&&
       (loadedRow||(session.hidden&&Number.isInteger(tab.next)));
     session.search='';if(!reusable)session.hidden=true;
     if(!tab){tab={id:'files',name:BridgeI18n.t('文件'),body:this.node('div','wb-browser')};session.files.unshift(tab);}
-    const state=this.locateState={session,tab,directory:parent,row:null};
+    const state=this.locateState={session,tab,directory:parent,row:null,samePath};
     this.select('files');
     if(!reusable){const reading=this.directory(session,tab,parent,false,state);this.watchLocateInput(state,tab.list);await reading;}
     else{
       if(tab.loading&&loadedRow){tab.controller?.abort();tab.loading=false;}
       this.watchLocateInput(state,tab.list);
     }
-    while(this.locateValid(state)&&Number.isInteger(tab.next)&&!Array.from(tab.list.children).some(row=>row.dataset.path===path)){
+    while(this.locateValid(state)&&Number.isInteger(tab.next)&&!Array.from(tab.list.children).some(row=>samePath(row.dataset.path,path))){
       const next=tab.next;await this.directory(session,tab,state.directory,true,state);if(tab.next===next)break;
     }
     if(!this.locateValid(state))return;
-    const row=Array.from(tab.list.children).find(row=>row.dataset.path===path);
+    const row=Array.from(tab.list.children).find(row=>samePath(row.dataset.path,path));
     if(!row){this.cancelLocate();return;}
     state.row=row;
     const list=tab.list,view=list.getBoundingClientRect(),bounds=row.getBoundingClientRect();
@@ -588,7 +590,7 @@ class Workbench {
   }
   async openSourceLocation(session, path, start, end = start) {
     if (session !== this.current || !path || !Number.isInteger(start) || start < 1 || start > 1000000 || !Number.isInteger(end) || end < start || end > 1000000) return;
-    await this.preview(session, {path, name:path.split('/').pop(), sourceLocation:{start,end}});
+    await this.preview(session, {path, name:path.split(/[\\/]/).pop(), sourceLocation:{start,end}});
   }
   async preview(session, entry) {
     if (session !== this.current) return;

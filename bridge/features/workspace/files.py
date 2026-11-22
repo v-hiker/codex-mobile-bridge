@@ -180,6 +180,20 @@ def _without_windows_prefix(value):
     return value
 
 
+def _strip_windows_verbatim(value):
+    if not isinstance(value, str):
+        return value
+    if value[:8].lower() in ('\\\\?\\unc\\', '//?/unc/'):
+        return ('//' if value.startswith('//') else '\\\\') + value[8:]
+    if len(value) >= 7 and value[:4] in ('\\\\?\\', '//?/') and re.match(r'[A-Za-z]:[\\/]', value[4:7]):
+        return value[4:]
+    return value
+
+
+def _strip_location_suffix(value):
+    return re.sub(r'(?::\d+(?:[-:]\d+)?|#L\d+(?:-L?\d+)?)$', '', value)
+
+
 def workspace_relative_path(path, cwd):
     """Locate an artifact inside the resolved workspace, including Windows aliases."""
     if not cwd:
@@ -242,7 +256,7 @@ def _model_image_references(state):
     def add(value, reference, runtime_view=False):
         # Remove an editor line suffix without changing the reference shown by
         # Markdown; only the actual filesystem lookup uses the trimmed path.
-        path = reference_path(re.sub(r':\d+$', '', value))
+        path = reference_path(_strip_windows_verbatim(_strip_location_suffix(value)))
         if not path or not (path.is_absolute() or bool(ntpath.splitdrive(str(path))[0])):
             return
         key = path_identity(path)
@@ -286,7 +300,7 @@ def _references(state):
                 for match in MARKDOWN_PATH.finditer(text):
                     user_candidates.add(match[1] or match[2])
                 user_candidates.update(file['path'] for file in desktop_file_attachments(text))
-            if item.get('type') in ('agentMessage', 'assistantMessage'):
+            if item.get('type') in AGENT_KINDS:
                 for match in MARKDOWN_PATH.finditer(item.get('text', '')):
                     candidates.add(match[1] or match[2])
                 comments.update(code_comment_references(item.get('text', '')))
@@ -307,26 +321,26 @@ def host_file_links(state, files=()):
     """
     known = {ref for file in files for ref in [file.get('reference'), *file.get('references', [])]}
     result = {}
+    cwd = _strip_windows_verbatim(state.get('cwd') or '')
     for raw in sorted(set().union(*_references(state)) - known):
-        value = re.sub(r':\d+$', '', raw)
-        if len(value) > 4096 or any(ord(c) < 32 for c in value):
+        value = _strip_windows_verbatim(_strip_location_suffix(raw))
+        if not value or len(value) > 4096 or any(ord(c) < 32 for c in value):
             continue
         try:
             if value.startswith('file:'):
                 url = urlsplit(value)
                 if url.netloc not in ('', 'localhost') or url.query or url.fragment:
                     continue
-                value = unquote(url.path)
+                value = _strip_windows_verbatim(unquote(url.path))
             elif not re.match(r'^/?[A-Za-z]:[\\/]', value):
                 url = urlsplit(value)
                 if url.scheme or url.netloc:
                     continue
-                value = unquote(url.path)
+                value = _strip_windows_verbatim(unquote(url.path))
             if re.match(r'^/[A-Za-z]:[\\/]', value):
                 value = value[1:]
             if value.startswith(('\\\\', '//')):
                 continue
-            cwd = state.get('cwd') or ''
             path_type = PureWindowsPath if re.match(r'^[A-Za-z]:[\\/]', value or cwd) or re.match(r'^[A-Za-z]:[\\/]', cwd) else PurePosixPath
             path = path_type(value)
             if not path.is_absolute():
@@ -344,9 +358,10 @@ def host_file_links(state, files=()):
 
 
 def artifact_paths(state, codex_home):
+    cwd_raw = _strip_windows_verbatim(state.get('cwd') or '')
     roots = [Path(codex_home) / 'visualizations'] if codex_home else []
-    if state.get('cwd'):
-        roots.append(Path(state['cwd']))
+    if cwd_raw:
+        roots.append(Path(cwd_raw))
     roots = [root.resolve() for root in roots]
     candidates, comments, user_candidates = _references(state)
     result = {}
@@ -354,28 +369,28 @@ def artifact_paths(state, codex_home):
     for raw in sorted(candidates | comments | user_candidates):
         # Model-authored Markdown and response attachments remain bound to the
         # workspace/visualization roots even when they name an image suffix.
-        value = re.sub(r':\d+$', '', raw)
-        path = reference_path(value, allow_relative=bool(state.get('cwd')))
+        value = _strip_windows_verbatim(_strip_location_suffix(raw))
+        path = reference_path(value, allow_relative=bool(cwd_raw))
         if not path:
             continue
         try:
-            path = (Path(state['cwd']) / path) if not path.is_absolute() and state.get('cwd') else path
+            path = (Path(cwd_raw) / path) if not path.is_absolute() and cwd_raw else path
             if raw in comments and raw not in candidates:
-                if not state.get('cwd'):
+                if not cwd_raw:
                     continue
-                root = Path(state['cwd']).resolve()
+                root = Path(cwd_raw).resolve()
                 relative = workspace_relative_path(path, root)
                 if relative is None:
                     continue
                 unresolved = Path(os.path.abspath(path))
                 # Ignore host aliases above the project (e.g. macOS /var), but
                 # never grant a review reference through a project symlink.
-                project = Path(os.path.abspath(state['cwd']))
+                project = Path(os.path.abspath(cwd_raw))
                 if project not in unresolved.parents or any(part.is_symlink() for part in (unresolved, *unresolved.parents) if part != project and project in part.parents):
                     continue
             path = path.resolve(strict=True)
             if raw in user_candidates and raw not in candidates | comments:
-                if not state.get('cwd') or workspace_relative_path(path, Path(state['cwd']).resolve()) is None:
+                if not cwd_raw or workspace_relative_path(path, Path(cwd_raw).resolve()) is None:
                     continue
             if not any(workspace_relative_path(path, root) is not None for root in roots) or not (path.is_file() or path.is_dir()):
                 continue

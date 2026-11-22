@@ -2,22 +2,73 @@
 const timelineText=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
 const fileChangeLabel=row=>timelineText('已编辑 {count} 个文件').replace('{count}',row.fileSummary?.count||0);
 const recentTimelinePages=new Map();
-function timelineFilePath(path,cwd){
-  if(typeof path!=='string'||!path||typeof cwd!=='string'||!cwd||/[\0\r\n]/.test(path))throw Error(timelineText('文件路径无法定位'));
-  const windows=/^(?:[A-Za-z]:[\\/]|\\\\|\/\/)/.test(cwd);
-  const normalize=value=>windows?value.replace(/\\/g,'/'):value;
-  path=normalize(path);cwd=normalize(cwd).replace(/\/+$/,'');
-  const absolute=/^(?:\/|[A-Za-z]:\/)/.test(path);
-  if(absolute){
-    const prefix=cwd+'/',match=windows?path.toLowerCase().startsWith(prefix.toLowerCase()):path.startsWith(prefix);
-    if(!match)throw Error(timelineText('此文件位于聊天项目之外，无法在当前文件标签页中定位。'));
-    path=path.slice(prefix.length);
-  }
+function stripWindowsVerbatim(value){
+  if(typeof value!=='string')return value;
+  if(/^(?:\\\\|\/\/)\?[\\/]UNC[\\/]/i.test(value))return (value.startsWith('//')?'//':'\\\\')+value.slice(8);
+  if(/^(?:\\\\|\/\/)\?[\\/][A-Za-z]:[\\/]/.test(value))return value.slice(4);
+  return value;
+}
+function normalizeHostTimelinePath(value,base,hasCwd){
+  let root='',tail='';
+  const unc=/^\/\/([^/]+\/[^/]+)(?:\/(.*))?$/.exec(value);
+  if(unc){
+    const baseUnc=hasCwd?/^\/\/([^/]+\/[^/]+)(?:\/|$)/.exec(base):null;
+    if(!baseUnc||unc[1].toLowerCase()!==baseUnc[1].toLowerCase())throw Error(timelineText('只能浏览本机磁盘或当前项目的共享目录'));
+    root='//'+unc[1]+'/';tail=unc[2]||'';
+  }else if(/^([A-Za-z]:)\/(.*)$/.test(value)){
+    const drive=/^([A-Za-z]:)\/(.*)$/.exec(value);
+    root=drive[1]+'/';tail=drive[2];
+  }else if(value.startsWith('/')&&!value.startsWith('//')){
+    root='/';tail=value.slice(1);
+  }else throw Error(timelineText('文件路径无法定位'));
   const parts=[];
-  for(const part of path.split('/')){
+  for(const part of tail.split('/')){
     if(!part||part==='.')continue;
     if(part==='..'){if(!parts.length)throw Error(timelineText('文件路径无法定位'));parts.pop();}
     else parts.push(part);
+  }
+  if(!parts.length||parts.some(part=>part.includes('\\')||part.includes(':')))throw Error(timelineText('文件路径无法定位'));
+  return root+parts.join('/');
+}
+function timelineFilePath(path,cwd,{allowHost=false}={}){
+  if(typeof path!=='string'||!path||/[\0\r\n]/.test(path))throw Error(timelineText('文件路径无法定位'));
+  const rawCwd=stripWindowsVerbatim(cwd);
+  if(!allowHost&&(typeof rawCwd!=='string'||!rawCwd))throw Error(timelineText('文件路径无法定位'));
+  if(allowHost&&rawCwd!=null&&(typeof rawCwd!=='string'||/[\0\r\n]/.test(rawCwd)))throw Error(timelineText('文件路径无法定位'));
+  path=stripWindowsVerbatim(path);
+  if(/^[A-Za-z][A-Za-z0-9+.-]*:/.test(path)&&!/^[A-Za-z]:[\\/]/.test(path))throw Error(timelineText('文件路径无法定位'));
+  const hasCwd=typeof rawCwd==='string'&&rawCwd.length>0;
+  const windows=/^(?:[A-Za-z]:[\\/]|\\\\|\/\/)/.test(path)||(hasCwd&&/^(?:[A-Za-z]:[\\/]|\\\\|\/\/)/.test(rawCwd));
+  const normalize=value=>windows?value.replace(/\\/g,'/'):value;
+  path=normalize(path);const base=hasCwd?normalize(rawCwd).replace(/\/+$/,''):'';
+  const absolute=/^(?:\/|[A-Za-z]:\/)/.test(path);
+  if(absolute){
+    if(hasCwd){
+      const prefix=base+'/',match=windows?path.toLowerCase().startsWith(prefix.toLowerCase()):path.startsWith(prefix);
+      if(match){
+        const parts=[];let climbed=false;
+        for(const part of path.slice(prefix.length).split('/')){
+          if(!part||part==='.')continue;
+          if(part==='..'){if(!parts.length){climbed=true;break;}parts.pop();}
+          else parts.push(part);
+        }
+        if(!climbed&&parts.length&&!parts.some(part=>part.includes('\\')||part.includes(':')))return parts.join('/');
+      }else if(!allowHost)throw Error(timelineText('此文件位于聊天项目之外，无法在当前文件标签页中定位。'));
+    }else if(!allowHost)throw Error(timelineText('文件路径无法定位'));
+    if(!allowHost)throw Error(timelineText('文件路径无法定位'));
+    return normalizeHostTimelinePath(path,base,hasCwd);
+  }
+  if(!hasCwd)throw Error(timelineText('文件路径无法定位'));
+  const parts=[];
+  for(const part of path.split('/')){
+    if(!part||part==='.')continue;
+    if(part==='..'){
+      if(!parts.length){
+        if(!allowHost)throw Error(timelineText('文件路径无法定位'));
+        return normalizeHostTimelinePath(base+'/'+path,base,true);
+      }
+      parts.pop();
+    }else parts.push(part);
   }
   if(!parts.length||parts.some(part=>part.includes('\\')||part.includes(':')))throw Error(timelineText('文件路径无法定位'));
   return parts.join('/');

@@ -184,7 +184,7 @@ function renderLoginStatus(status=loginStatus){
 document.addEventListener('bridge-language',()=>renderLoginStatus());
 function clearCodexProvisionalDrafts(){codexProvisionalDrafts.clear();for(let i=sessionStorage.length-1;i>=0;i--){const key=sessionStorage.key(i);if(key?.startsWith('draft:')||key?.startsWith('skills:'))sessionStorage.removeItem(key);}}
 function clearQuoteComposer(){if(typeof codexQuotes!=='undefined')codexQuotes?.reset();}
-function showLogin(passwordless=false,status){sessionPins.suspend();clearQuoteComposer();if(typeof ChatTimeline!=='undefined')ChatTimeline.clearCache?.();else window.BridgeChatHistoryCache?.forget();draftGateway='';codexDraftScope=null;clearCodexProvisionalDrafts();codexActiveAccountId=undefined;window.BridgeDownloads?.clear();$('mobile-binding-status').hidden=true;if(typeof codexCliAccessPanel!=='undefined')codexCliAccessPanel?.clear();claudeCliAccessPanel?.clear();if(window.BridgeSharedRelay){location.replace((window.BridgeRelayBase||'')+'/relay/');return;}desktopSessions.clear();clientNavigation.clear?.();modelCatalogGeneration++;modelCatalogs.clear();catalogData.models=null;catalogResults.models=null;catalogTasks.models=null;workbench.reset();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();chatTimeline?.dispose();chatTimeline=null;document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless||BridgeHost.isNativeApp();$('login-attempts').hidden=passwordless;renderLoginStatus(status);if(window.BridgeBootstrap)window.BridgeBootstrap.ready();else $('bootstrap-status').hidden=true;}
+function showLogin(passwordless=false,status){sessionPins.suspend();clearQuoteComposer();if(typeof ChatTimeline!=='undefined')ChatTimeline.clearCache?.();else window.BridgeChatHistoryCache?.forget();draftGateway='';codexDraftScope=null;clearCodexProvisionalDrafts();codexActiveAccountId=undefined;window.BridgeDownloads?.clear();$('mobile-binding-status').hidden=true;if(typeof codexCliAccessPanel!=='undefined')codexCliAccessPanel?.clear();claudeCliAccessPanel?.clear();if(window.BridgeSharedRelay){location.replace((window.BridgeRelayBase||'')+'/relay/');return;}desktopSessions.clear();clientNavigation.clear?.();modelCatalogGeneration++;modelCatalogs.clear();catalogData.models=null;catalogResults.models=null;catalogTasks.models=null;workbench.reset();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();chatTimeline?.dispose();chatTimeline=null;document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless||BridgeHost.isNativeApp();$('login-attempts').hidden=passwordless;renderLoginStatus(status);if(window.BridgeBootstrap)window.BridgeBootstrap.ready();else $('bootstrap-status').hidden=true;}
 async function start(pairingToken=null){
   window.BridgeBootstrap?.waitingForAuth();
   const auth=window.BridgeBootstrap?.readAuth?await window.BridgeBootstrap.readAuth(signal=>api('/api/auth',undefined,signal)):await api('/api/auth');
@@ -332,14 +332,39 @@ function renderList(){
   const unassigned=chat=>chat.projectKey===(chat.host||'local')+'|unassigned';
   const ordered=grouped?[...displayedRows].sort((a,b)=>Number(unassigned(a))-Number(unassigned(b))||(b.recency-a.recency)||b.id.localeCompare(a.id)):[...displayedRows].sort((a,b)=>Number(!!b.bridgePinned)-Number(!!a.bridgePinned)||(b.recency-a.recency)||b.id.localeCompare(a.id));
   const hasPins=!grouped&&ordered.some(chat=>chat.bridgePinned);
+  const groupCounts=new Map();
+  if(grouped)for(const row of ordered)groupCounts.set(row.projectKey,(groupCounts.get(row.projectKey)||0)+1);
   for(const chat of ordered){
     let parent=$('sessions');
     if(hasPins&&pinSection!==!!chat.bridgePinned){pinSection=!!chat.bridgePinned;const label=el('h3','muted',t(pinSection?'置顶聊天':'最近聊天'));$('sessions').append(label);}
     if(grouped){
       if(!groups.has(chat.projectKey)){
-        const details=el('details','project-group');
+        const details=el('details','project-group'),isUnassigned=unassigned(chat);
+        if(isUnassigned)details.dataset.unassigned='true';
         details.open=localStorage.getItem('group:'+chat.projectKey)!=='closed';
-        details.append(el('summary','',chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
+        const summary=el('summary','project-group-summary');
+        const chevron=el('span','project-group-chevron');chevron.setAttribute('aria-hidden','true');
+        const icon=el('span','project-group-icon');icon.setAttribute('aria-hidden','true');
+        const titleNode=el('span','project-group-title');
+        const nameNode=el('span','project-group-name',chat.projectName);
+        const hostLabel=chat.host==='local'?t('此电脑'):chat.hostLabel;
+        const hostNode=el('span','project-group-host',hostLabel);
+        if(chat.host&&chat.host!=='local')hostNode.dataset.remote='true';
+        titleNode.append(nameNode,hostNode);
+        const countNode=el('span','project-group-count');countNode.dataset.count=String(groupCounts.get(chat.projectKey)||0);countNode.setAttribute('aria-hidden','true');
+        summary.append(chevron,icon,titleNode,countNode);
+        if(!isUnassigned){
+          const add=el('button','project-group-add');add.type='button';
+          const addLabel=t('新建聊天')+' · '+chat.projectName;
+          add.setAttribute('aria-label',addLabel);add.title=addLabel;
+          add.onclick=event=>{
+            event.preventDefault();event.stopPropagation();
+            const presetKind=chat.host?.startsWith('wsl:')||chat.access?.runtime==='wsl'?'wsl':chat.host?.startsWith('codex:')||chat.access?.source==='cli'||(typeof listSource!=='undefined'&&listSource==='cli')?'cli':'desktop';
+            openNewChat({projectKey:chat.projectKey,host:chat.host||'local',cwd:chat.cwd||'',kind:presetKind}).catch(e=>toast(e.message));
+          };
+          summary.append(add);
+        }
+        details.append(summary);
         details.ontoggle=()=>localStorage.setItem('group:'+chat.projectKey,details.open?'open':'closed');
         groups.set(chat.projectKey,details);$('sessions').append(details);
       }
@@ -349,7 +374,7 @@ function renderList(){
     button.dataset.id=chat.id;button.dataset.host=chat.host;
     button.append(el('strong','',chat.title));
     button.append(el('span','session-source',sourceLabel(sessionAccess(chat.access))||t('其他来源')));
-    const meta=el('small');meta.append(el('span','',(chat.orphanedSideChat?t('侧边聊天（主聊天不可用）')+' · ':'')+chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)),el('time','',dateText(chat.recency/1000)));
+    const meta=el('small');meta.append(el('span',chat.orphanedSideChat?'session-orphan':'',(chat.orphanedSideChat?t('侧边聊天（主聊天不可用）')+' · ':'')+chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)),el('time','',dateText(chat.recency/1000)));
     if(chat.pinPending)button.append(el('span','session-source',t('置顶设置待同步')));
     button.append(meta);button.onclick=()=>openChat(chat.id,chat.host).catch(e=>toast(e.message));bindSessionMenu(button,chat);parent.append(button);
   }
@@ -606,7 +631,7 @@ const contextUsageControl=new ContextUsageControl({onCompact:async()=>{
 let newChatProjects=[],newChatEnvironments=[],newChatCanBrowse=false,newChatEntry='desktop',newChatPreferredHost='local',creatingChat=false,approvalBusy=0;
 const newChatUrl=path=>path+(isCodexEntry(newChatEntry)?'?entry='+encodeURIComponent(newChatEntry):'');
 const independentProject=()=>newChatEntry.startsWith('wsl:')||newChatEntry.startsWith('codex:')?newChatEntry+'|independent':'local|independent';
-let newChatRequest=0,newChatModelsEnabled=false,newChatModelPicker=null;
+let newChatRequest=0,newChatModelsEnabled=false,newChatModelPicker=null,newChatPreset=null;
 function updateNewChatSubmit(){const selected=$('new-chat-project').value;$('new-chat-submit').disabled=creatingChat||!selected||selected==='__directory__'&&!$('new-chat-directory-path').value||newChatModelsEnabled&&(!newChatModelPicker||!newChatModelPicker.valid());}
 function syncNewChatModels(){
   if(!newChatModelsEnabled){if(newChatModelPicker){newChatModelPicker.dispose();newChatModelPicker.root.remove();newChatModelPicker=null;}return;}
@@ -617,7 +642,7 @@ function syncNewChatModels(){
   const base=newChatUrl('/api/projects/models'),scope=JSON.stringify([listIdentity,codexActiveAccountId,newChatEntry,query.toString()]);
   newChatModelPicker.load(scope,refresh=>api(base+(base.includes('?')?'&':'?')+query+(refresh?'&refresh=true':'')));
 }
-$('new-chat-dialog').addEventListener('close',()=>{newChatModelPicker?.dispose();newChatModelPicker?.root.remove();newChatModelPicker=null;newChatModelsEnabled=false;});
+$('new-chat-dialog').addEventListener('close',()=>{newChatModelPicker?.dispose();newChatModelPicker?.root.remove();newChatModelPicker=null;newChatModelsEnabled=false;newChatPreset=null;});
 function newChatEnvironment(){return newChatEnvironments.find(row=>row.key===$('new-chat-entry').value)||{host:isCodexEntry(newChatEntry)?newChatEntry:'local',name:newChatEntry.startsWith('wsl:')?wslEntries().find(row=>row.id===newChatEntry)?.name:t('此电脑')};}
 function renderNewChatProjects(){
   const kind=$('new-chat-type').value,wsl=kind==='wsl',environment=newChatEnvironment(),host=environment.host;
@@ -630,8 +655,11 @@ function renderNewChatProjects(){
   if(newChatCanBrowse)$('new-chat-project').append(new Option(t('选择其他目录…'),'__directory__'));
   $('new-chat-directory-browse').hidden=!newChatCanBrowse;$('new-chat-directory-browse').disabled=false;
   for(const project of projects)$('new-chat-project').append(new Option(project.name,project.key));
+  const presetMatch=newChatPreset?(projects.find(row=>row.key===newChatPreset.projectKey)||(newChatPreset.cwd&&(newChatPreset.host||'local')===host?projects.find(row=>row.cwd===newChatPreset.cwd):null)):null;
   const selected=listRows.find(row=>row.id===currentId&&row.host===currentHost)?.projectKey;
-  if(projects.some(row=>row.key===selected))$('new-chat-project').value=selected;
+  if(presetMatch)$('new-chat-project').value=presetMatch.key;
+  else if(newChatPreset&&newChatCanBrowse&&newChatPreset.cwd&&(newChatPreset.host||'local')===host){$('new-chat-project').value='__directory__';$('new-chat-directory-path').value=newChatPreset.cwd;}
+  else if(projects.some(row=>row.key===selected))$('new-chat-project').value=selected;
   else if(projects.length&&!wsl)$('new-chat-project').value=projects[0].key;
   $('new-chat-project').onchange();
   if(!wsl&&!newChatEnvironments.length){$('new-chat-directory-browse').hidden=true;$('new-chat-project').replaceChildren();$('new-chat-submit').disabled=true;}
@@ -677,20 +705,24 @@ async function loadNewChatProjects(){
     if(!wsl&&kind==='cli'&&newChatEnvironment().host!=='local')await loadSelectedNewChatProjects();
   }catch(error){if(generation===newChatRequest){$('new-chat-error').textContent=t(error.message);$('new-chat-path').textContent='';}}
 }
-$('new-chat').onclick=async()=>{
+async function openNewChat(preset=null){
   const entries=wslEntries(),native=codexEntries().find(row=>row.id==='desktop'),type=$('new-chat-type');
   const wslOption=[...type.options].find(option=>option.value==='wsl');
   if(clientNavigation.wslSupported!==true)wslOption?.remove();
   else if(!wslOption)type.append(new Option('WSL','wsl'));
   for(const option of type.options)option.disabled=option.value==='wsl'?!entries.length:native?.enabled===false;
   $('new-chat-entry').replaceChildren(...entries.map(row=>new Option(row.name||row.label,row.id)));
-  const preferred=currentHost.startsWith('wsl:')?currentHost:preferredWslEntry;
+  const preferred=preset?.host?.startsWith('wsl:')?preset.host:currentHost.startsWith('wsl:')?currentHost:preferredWslEntry;
   if(entries.some(row=>row.id===preferred))$('new-chat-entry').value=preferred;
-  newChatPreferredHost=currentHost;newChatEnvironments=[];
+  newChatPreset=preset;
+  newChatPreferredHost=preset?.host||currentHost;newChatEnvironments=[];
   type.disabled=currentHost.startsWith('codex:');
-  type.value=currentHost.startsWith('codex:')?'cli':native?.enabled===false&&entries.length?'wsl':listSource==='wsl'&&entries.length?'wsl':listSource==='cli'?'cli':listSource==='all'&&currentHost.startsWith('wsl:')&&entries.length?'wsl':'desktop';
+  const defaultKind=currentHost.startsWith('codex:')?'cli':native?.enabled===false&&entries.length?'wsl':listSource==='wsl'&&entries.length?'wsl':listSource==='cli'?'cli':listSource==='all'&&currentHost.startsWith('wsl:')&&entries.length?'wsl':'desktop';
+  const presetKind=preset?.kind&&[...type.options].some(option=>option.value===preset.kind&&!option.disabled)?preset.kind:null;
+  type.value=!type.disabled&&presetKind?presetKind:defaultKind;
   $('new-chat-dialog').showModal();await loadNewChatProjects();
-};
+}
+$('new-chat').onclick=()=>openNewChat();
 $('new-chat-type').onchange=()=>{
   if($('new-chat-type').value==='wsl'){$('new-chat-entry').replaceChildren(...wslEntries().map(row=>new Option(row.name||row.label,row.id)));if(wslEntries().some(row=>row.id===preferredWslEntry))$('new-chat-entry').value=preferredWslEntry;}
   return loadNewChatProjects();
@@ -936,7 +968,7 @@ async function openChat(id,host="local"){
   messageActions.dialog.close();workbench.open(id,host,route);saveDraft();chatTimeline?.dispose();codexQuotes?.reset();currentId=id;currentHost=host;refreshEntryAccounts();codexDraftScope=null;codexDraftTouched=false;state=null;catalogStarted=false;workbench.current.access=sessionAccess(listRows.find(row=>row.id===id&&row.host===host)?.access);contextUsageControl.update(null);workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));modelCatalogGeneration++;catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();try{selectedSkills=new Set(JSON.parse(!draftGateway?sessionStorage.getItem('skills:'+chatKey(id,host))||'[]':'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('message').value=!draftGateway?sessionStorage.getItem('draft:'+chatKey(id,host))||'':'';$('send-error').textContent='';renderChatTitle();$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');$('send').disabled=true;if(!browserNavigation.sync({provider:'codex',id,host}))history.replaceState(null,'','#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const opening=workbench.current;
 try{if(window.BridgeFeatures)await window.BridgeFeatures.load('chat');}catch(error){if(openGeneration===chatOpenGeneration&&workbench.current===opening&&$('app').classList.contains('chat-open')){$('status').textContent=t('连接失败');$('send-error').textContent=t(error.message);}return;}
 if(openGeneration!==chatOpenGeneration||workbench.current!==opening||currentId!==id||currentHost!==host||!$('app').classList.contains('chat-open'))return;
-const timeline=chatTimeline=new ChatTimeline({cacheKey:listIdentity?JSON.stringify([listIdentity,host,id]):'',url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,onReady:reportVisibleChat,onFile:async path=>{const session=workbench.current;if(currentId!==id||currentHost!==host||!session||(session.chatId||session.id)!==id||session.host!==host)return;try{const childRelative=timelineFilePath(path,state?.cwd),relative=timelineFilePath(state.cwd.replace(/[\\/]$/,'')+'/'+childRelative,session.cwd||state.cwd);await workbench.request(workbench.url(session,'info',relative));if(workbench.current!==session||currentId!==id||currentHost!==host)return;await workbench.locate(session,relative);}catch(error){if(workbench.current===session)toast(t(error.message));}},canEdit:()=>currentAccess().canEditMessages,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>timeline.fileUrl(file),{fullText}),onAction:(action,row,timeline)=>{if(!currentAccess().canEditMessages)return;const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{$('status').textContent=t(text);}});
+const timeline=chatTimeline=new ChatTimeline({cacheKey:listIdentity?JSON.stringify([listIdentity,host,id]):'',url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,onReady:reportVisibleChat,onFile:async path=>{const session=workbench.current;if(currentId!==id||currentHost!==host||!session||(session.chatId||session.id)!==id||session.host!==host)return;try{const target=timelineFilePath(path,state?.cwd,{allowHost:true}),location=/^(?:\/|[A-Za-z]:\/)/.test(target)?target:timelineFilePath((state?.cwd||'').replace(/[\\/]$/,'')+'/'+target,session.cwd||state?.cwd,{allowHost:true}),info=await workbench.request(workbench.url(session,'info',location));if(workbench.current!==session||currentId!==id||currentHost!==host)return;await workbench.locate(session,info?.absolutePath||location);}catch(error){if(workbench.current===session)toast(t(error.message));}},canEdit:()=>currentAccess().canEditMessages,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>timeline.fileUrl(file),{fullText}),onAction:(action,row,timeline)=>{if(!currentAccess().canEditMessages)return;const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{$('status').textContent=t(text);}});
   reconnectFailure=null;
   window.BridgePresentation?.openChat();
   const reading=timeline.start();
@@ -989,11 +1021,11 @@ $('appearance-reset-dynamic').onchange=async event=>{
 let notificationDefaultsRequest=0;
 window.loadNotificationDefaults=async()=>{
   if(window.BridgeSharedRelay){$('appearance-reset-dynamic').closest('fieldset').hidden=true;return;}
-  loadResetDynamicSetting();
   const request=++notificationDefaultsRequest;
-  for(const id of ['notification-requests','notification-completions'])$(id).disabled=true;
-  $('notification-settings-error').textContent='';
+  for(const id of ['notification-requests','notification-completions','appearance-reset-dynamic'])$(id).disabled=true;
+  $('notification-settings-error').textContent='';$('reset-dynamic-error').textContent='';
   if($('app').hidden)return;
+  loadResetDynamicSetting();
   try{
     const result=await api('/api/notifications/defaults');if(request!==notificationDefaultsRequest)return;
     $('notification-requests').checked=result.requests;$('notification-completions').checked=result.completion;

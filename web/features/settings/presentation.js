@@ -118,4 +118,97 @@ if(typeof document!=='undefined')(()=>{
   window.BridgePresentation={resizeMessage,openChat:()=>requestAnimationFrame(revealMessage),showError:revealMessage};
   apply();nativeTheme();resizeMessage();
   document.body.classList.toggle('chat-detail',!get('app').hidden&&get('app').classList.contains('chat-open'));
+  const chat=get('chat'),timeline=get('timeline'),newer=get('newer'),search=get('search'),app=get('app');
+  const reduceMotion=()=>typeof window.matchMedia==='function'&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const jumpLabel=()=>typeof BridgeI18n!=='undefined'&&BridgeI18n.language?.()==='en'?'Jump to bottom':'回到底部';
+  let jumpButton=null;
+  const syncJumpBottom=()=>{
+    if(!jumpButton||!chat||!timeline)return;
+    const distance=timeline.scrollHeight-timeline.scrollTop-timeline.clientHeight;
+    const newerVisible=Boolean(newer&&!newer.hidden);
+    jumpButton.hidden=chat.hidden||newerVisible||distance<=360;
+  };
+  if(chat&&timeline&&composer){
+    jumpButton=document.createElement('button');
+    jumpButton.id='jump-bottom';jumpButton.className='jump-bottom';jumpButton.type='button';jumpButton.hidden=true;
+    const updateJumpLabel=()=>{const label=jumpLabel();jumpButton.setAttribute('aria-label',label);jumpButton.title=label;};
+    updateJumpLabel();
+    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('fill','none');svg.setAttribute('stroke','currentColor');
+    svg.setAttribute('stroke-width','2');svg.setAttribute('stroke-linecap','round');svg.setAttribute('stroke-linejoin','round');
+    svg.setAttribute('aria-hidden','true');
+    const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d','m6 9 6 6 6-6');
+    svg.append(path);jumpButton.append(svg);
+    composer.before(jumpButton);
+    jumpButton.onclick=()=>{
+      if(typeof timeline.scrollTo==='function')timeline.scrollTo({top:timeline.scrollHeight,behavior:reduceMotion()?'auto':'smooth'});
+      else timeline.scrollTop=timeline.scrollHeight;
+    };
+    timeline.addEventListener('scroll',syncJumpBottom,{passive:true});
+    if(typeof ResizeObserver!=='undefined')new ResizeObserver(syncJumpBottom).observe(timeline);
+    if(typeof MutationObserver!=='undefined'){
+      new MutationObserver(syncJumpBottom).observe(chat,{attributes:true,attributeFilter:['hidden']});
+      if(newer)new MutationObserver(syncJumpBottom).observe(newer,{attributes:true,attributeFilter:['hidden']});
+    }
+    document.addEventListener('bridge-language',updateJumpLabel);
+    syncJumpBottom();
+  }
+  if(search){
+    try{search.type='search';}catch{}
+    search.addEventListener('keydown',event=>{
+      if(event.key!=='Escape')return;
+      if(search.value){search.value='';search.dispatchEvent(new Event('input',{bubbles:true}));event.preventDefault();}
+      else search.blur();
+    });
+  }
+  const welcome=get('welcome');
+  if(welcome&&!get('welcome-new-chat')&&typeof welcome.append==='function'&&typeof document.createElement==='function'&&typeof document.createElementNS==='function'){
+    const actions=document.createElement('div');actions.className='welcome-actions';
+    const isApple=typeof navigator!=='undefined'&&/Mac|iPhone|iPad|iPod/i.test(navigator.platform||'');
+    const createBtn=document.createElement('button');createBtn.id='welcome-new-chat';createBtn.className='welcome-primary';createBtn.type='button';
+    const plusIcon=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    plusIcon.setAttribute('viewBox','0 0 24 24');plusIcon.setAttribute('fill','none');plusIcon.setAttribute('stroke','currentColor');
+    plusIcon.setAttribute('stroke-width','2.2');plusIcon.setAttribute('stroke-linecap','round');plusIcon.setAttribute('stroke-linejoin','round');plusIcon.setAttribute('aria-hidden','true');
+    const plusPath=document.createElementNS('http://www.w3.org/2000/svg','path');plusPath.setAttribute('d','M12 5v14M5 12h14');
+    plusIcon.append(plusPath);
+    const createText=document.createElement('span');
+    createBtn.append(plusIcon,createText);
+    createBtn.onclick=()=>get('new-chat')?.click();
+    const searchBtn=document.createElement('button');searchBtn.id='welcome-search';searchBtn.className='welcome-secondary';searchBtn.type='button';
+    const searchIcon=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    searchIcon.setAttribute('viewBox','0 0 24 24');searchIcon.setAttribute('fill','none');searchIcon.setAttribute('stroke','currentColor');
+    searchIcon.setAttribute('stroke-width','1.9');searchIcon.setAttribute('stroke-linecap','round');searchIcon.setAttribute('stroke-linejoin','round');searchIcon.setAttribute('aria-hidden','true');
+    const searchCircle=document.createElementNS('http://www.w3.org/2000/svg','circle');searchCircle.setAttribute('cx','11');searchCircle.setAttribute('cy','11');searchCircle.setAttribute('r','7');
+    const searchPath=document.createElementNS('http://www.w3.org/2000/svg','path');searchPath.setAttribute('d','m20 20-3.5-3.5');
+    searchIcon.append(searchCircle,searchPath);
+    const searchText=document.createElement('span');
+    const kbd=document.createElement('kbd');kbd.className='welcome-kbd';kbd.textContent=isApple?'⌘K':'Ctrl K';
+    searchBtn.append(searchIcon,searchText,kbd);
+    searchBtn.onclick=()=>{
+      if(!search)return;
+      if(app?.classList?.contains('chat-list-collapsed')){
+        const toggle=document.querySelector('.chat-list-toggle');
+        if(toggle)toggle.click();else app.classList.remove('chat-list-collapsed');
+      }
+      search.focus();search.select();
+    };
+    const syncWelcomeLabels=()=>{
+      const en=typeof BridgeI18n!=='undefined'&&BridgeI18n.language?.()==='en';
+      createText.textContent=en?'New chat':'新建聊天';
+      searchText.textContent=en?'Search chats':'搜索聊天';
+    };
+    syncWelcomeLabels();
+    document.addEventListener('bridge-language',syncWelcomeLabels);
+    actions.append(createBtn,searchBtn);welcome.append(actions);
+  }
+  document.addEventListener('keydown',event=>{
+    if(!(event.ctrlKey||event.metaKey)||event.altKey||event.shiftKey||event.key.toLowerCase()!=='k')return;
+    if(!search||!app||app.hidden||document.querySelector('dialog[open]'))return;
+    if(window.innerWidth<=720&&app.classList.contains('chat-open'))return;
+    if(app.classList.contains('chat-list-collapsed')){
+      const toggle=document.querySelector('.chat-list-toggle');
+      if(toggle)toggle.click();else app.classList.remove('chat-list-collapsed');
+    }
+    event.preventDefault();search.focus();search.select();
+  });
 })();

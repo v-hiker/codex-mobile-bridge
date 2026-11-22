@@ -52,7 +52,7 @@ window.BridgeProjectPicker=(()=>{
       add('h2',t('信任此工作区？'));add('p',environment||'','muted');add('p',path);
       add('p',t('信任此目录及原客户端识别的工作区，将允许加载其中的项目配置。仅信任你了解来源的项目。'));
       const actions=add('div','','project-picker-actions');let confirmed=false;
-      for(const [label,accept] of [['确认信任',true],['取消',false]]){const button=document.createElement('button');button.type='button';button.textContent=t(label);button.onclick=()=>{confirmed=accept&&isCurrent()!==false;box.close();};actions.append(button);}
+      for(const [label,accept] of [['确认信任',true],['取消',false]]){const button=document.createElement('button');button.type='button';button.className=accept?'primary':'plain';button.textContent=t(label);button.onclick=()=>{confirmed=accept&&isCurrent()!==false;box.close();};actions.append(button);}
       box.addEventListener('close',()=>{box.remove();resolve(confirmed);},{once:true});document.body.append(box);box.showModal();
     });
   }

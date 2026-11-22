@@ -60,3 +60,27 @@ test('file callback uses captured session host, validates existence, and cancels
  scope.workbench.request=async()=>({});await open('/repo/file.py');assert.equal(locations[0][0],session);assert.equal(locations[0][1],'file.py');
  scope.currentHost='ssh:other';await open('/repo/file.py');assert.equal(locations.length,1);
 });
+test('worktree and Windows verbatim paths resolve cleanly with allowHost while keeping security checks',async()=>{
+ assert.equal(relative('D:\\Projects\\YHL\\jh-sop\\src\\Main.java','\\\\?\\D:\\Projects\\YHL\\jh-sop'),'src/Main.java');
+ assert.equal(relative('\\\\?\\D:\\Projects\\YHL\\jh-sop\\src\\Main.java','D:\\Projects\\YHL\\jh-sop'),'src/Main.java');
+ assert.equal(relative('D:\\Projects\\YHL\\jh-sop-worktrees\\branch\\A.java','\\\\?\\D:\\Projects\\YHL\\jh-sop',{allowHost:true}),'D:/Projects/YHL/jh-sop-worktrees/branch/A.java');
+ assert.equal(relative('C:\\Users\\wangy\\.codex\\worktrees\\9844\\jh-sop\\A.java','D:\\Projects\\YHL\\jh-sop',{allowHost:true}),'C:/Users/wangy/.codex/worktrees/9844/jh-sop/A.java');
+ assert.equal(relative('/tmp/worktree/a.py','/repo',{allowHost:true}),'/tmp/worktree/a.py');
+ assert.equal(relative('../jh-sop-worktrees/branch/A.java','D:\\Projects\\YHL\\jh-sop',{allowHost:true}),'D:/Projects/YHL/jh-sop-worktrees/branch/A.java');
+ assert.equal(relative('D:\\worktree\\a.py',null,{allowHost:true}),'D:/worktree/a.py');
+ assert.equal(relative('/tmp/worktree/a.py',null,{allowHost:true}),'/tmp/worktree/a.py');
+ assert.equal(relative('\\\\server\\share\\worktree\\a.py','\\\\server\\share\\repo',{allowHost:true}),'//server/share/worktree/a.py');
+ for(const bad of ['https://host/file','file:///repo/file','\\\\other\\share\\repo\\file.py','../../../../secret'])assert.throws(()=>relative(bad,'\\\\server\\share\\repo',{allowHost:true}));
+ assert.throws(()=>relative('../../../../secret','D:\\Projects',{allowHost:true}));
+ assert.throws(()=>relative('relative.py',null,{allowHost:true}));
+
+ const source=fs.readFileSync('web/shell/app.js','utf8');
+ const callback=/onFile:(async path=>\{.*?\}),canEdit:/.exec(source)[1];
+ const session={id:'wt-chat',host:'local',cwd:'\\\\?\\D:\\Projects\\YHL\\jh-sop'},requests=[],locations=[],errors=[];
+ const scope=vm.createContext({id:'wt-chat',host:'local',currentId:'wt-chat',currentHost:'local',state:{cwd:'\\\\?\\D:\\Projects\\YHL\\jh-sop'},timelineFilePath:relative,t:value=>value,toast:value=>errors.push(value),workbench:{current:session,url:(target,action,path)=>[target.host,action,path],request:async url=>{requests.push(url);return {absolutePath:'D:/Projects/YHL/jh-sop-worktrees/branch/A.java'};},locate:async(target,path)=>locations.push([target,path])}});
+ const open=vm.runInContext('('+callback+')',scope);
+ await open('D:\\Projects\\YHL\\jh-sop-worktrees\\branch\\A.java');
+ assert.deepEqual(errors,[]);
+ assert.deepEqual(requests,[['local','info','D:/Projects/YHL/jh-sop-worktrees/branch/A.java']]);
+ assert.deepEqual(locations,[[session,'D:/Projects/YHL/jh-sop-worktrees/branch/A.java']]);
+});

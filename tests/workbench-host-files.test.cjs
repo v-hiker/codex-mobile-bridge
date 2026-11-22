@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
-const context=vm.createContext({BridgeI18n:{t:x=>x},window:{}});
+const context=vm.createContext({BridgeI18n:{t:x=>x},window:{},setTimeout,clearTimeout});
 vm.runInContext(fs.readFileSync('web/features/workspace/workbench.js','utf8'),context);
 const Workbench=vm.runInContext('Workbench',context);
 test('host reads preserve selected host and project writes do not expand scope',()=>{
@@ -36,4 +36,17 @@ test('pending back navigation stays on the requested path and stops at native ro
    ['//server/share/folder','//server/share'],['//server/share/',null],['relative/path',null]]){
   assert.equal(wb.directoryParent(path),parent,path);
  }
+});
+test('locate matches loaded Windows drive file rows case-insensitively',async()=>{
+ const removed=[],added=[];
+ const row={dataset:{path:'D:/Worktree/File.java'},focus(){},classList:{remove:c=>removed.push(c),add:c=>added.push(c)},getBoundingClientRect:()=>({top:10,bottom:30})};
+ const list={children:[row],contains:node=>node===row,getBoundingClientRect:()=>({top:0,bottom:200}),scrollTop:0,scrollHeight:200,clientHeight:200,addEventListener(){},removeEventListener(){}};
+ const tab={id:'files',loaded:true,list,body:{}};
+ const session={key:'local|thread',id:'thread',host:'local',directory:'D:/Worktree',search:'',files:[tab]};
+ context.window={matchMedia:()=>({matches:true})};
+ const wb=Object.create(Workbench.prototype);
+ Object.assign(wb,{current:session,sessions:new Map([[session.key,session]]),tabs:{replaceChildren(){}},panel:{querySelector:()=>null},isVisible:(s,t)=>s===session&&t===tab,select(){},cancelLocate:Workbench.prototype.cancelLocate,watchLocateInput:Workbench.prototype.watchLocateInput,stopLocateInput:Workbench.prototype.stopLocateInput,locateValid:Workbench.prototype.locateValid});
+ await wb.locate(session,'d:\\Worktree\\File.java');
+ assert.ok(added.includes('wb-locate-highlight'));
+ wb.cancelLocate();
 });

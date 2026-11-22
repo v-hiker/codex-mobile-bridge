@@ -763,3 +763,21 @@ class HttpAdapters(unittest.TestCase):
         self.assertEqual(self.request('POST', terminal, {'action':'close','id':identifier}, headers)[0], 200)
         self.assertEqual(self.request('POST', '/api/clients', {'provider':'deepseek','enabled':False}, headers)[0], 200)
         self.assertNotEqual(self.request('GET', path, headers=headers)[0], 200)
+
+    def test_explicit_restart_desktop_requires_auth_csrf_and_forwards_choice(self):
+        manager = self.server.desktop_sessions = Mock()
+        manager.toggle_client.return_value = {'clients': []}
+        route = '/api/clients'
+        body = {'provider': 'deepseek', 'enabled': True, 'restartDesktop': True}
+        self.assertEqual(self.request('POST', route, body)[0], 401)
+        headers = self.login()
+        self.assertEqual(self.request('POST', route, body, {'Cookie': headers['Cookie']})[0], 403)
+        manager.toggle_client.assert_not_called()
+        self.assertEqual(self.request('POST', route, {**body, 'unexpected': 1}, headers)[0], 400)
+        manager.toggle_client.assert_not_called()
+        self.assertEqual(self.request('POST', route, body, headers)[0], 200)
+        manager.toggle_client.assert_called_once_with(body)
+        manager.toggle_client.reset_mock()
+        force_body = {**body, 'forceDesktop': True, 'forceConfirmed': True}
+        self.assertEqual(self.request('POST', route, force_body, headers)[0], 200)
+        manager.toggle_client.assert_called_once_with(force_body)

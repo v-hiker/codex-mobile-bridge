@@ -69,3 +69,19 @@ class HostFileNavigationTests(unittest.TestCase):
         self.assertIsNone(self.read('list', root)['parentPath'])
         with self.assertRaises((ValueError, PermissionError)):
             self.read('preview', self.other.as_posix()+'/../other/报告.txt')
+
+    def test_host_operation_handles_verbatim_prefix_and_relative_project_path(self):
+        nested = self.project / 'sub'
+        nested.mkdir()
+        (nested / 'inside.txt').write_text('inside', encoding='utf-8')
+        info = self.read('info', (nested / 'inside.txt').as_posix())
+        self.assertEqual(info['projectPath'], 'sub/inside.txt')
+        self.assertIsNone(self.read('info', (self.other / '报告.txt').as_posix())['projectPath'])
+        if os.name == 'nt':
+            verbatim_root = '\\\\?\\' + str(self.project)
+            verbatim_worktree = '\\\\?\\' + str(self.other / '报告.txt')
+            outside = operate(verbatim_root, 'info', {'scope': 'host', 'path': verbatim_worktree})
+            self.assertEqual(outside['absolutePath'], (self.other / '报告.txt').as_posix())
+            self.assertIsNone(outside['projectPath'])
+            inside = operate(verbatim_root, 'info', {'scope': 'host', 'path': str(nested / 'inside.txt').lower()})
+            self.assertEqual(inside['projectPath'].lower(), 'sub/inside.txt')

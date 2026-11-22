@@ -6,10 +6,10 @@ function fixture(){
   vm.runInContext(fs.readFileSync('web/hosts/environment.js','utf8'),context);
   context.ClientIdentity=require('../web/features/clients/client-lifecycle.js').ClientIdentity;
   vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),context);
-  let initializeChoice=false,finishInitialize;const initializations=[];context.ClientLifecycle.chooseInitialize=client=>{initializations.push(client.id);return initializeChoice==='pending'?new Promise(resolve=>finishInitialize=resolve):initializeChoice;};
+  let initializeChoice=false,finishInitialize,restartChoice=false;const initializations=[],restarts=[];context.ClientLifecycle.chooseInitialize=client=>{initializations.push(client.id);return initializeChoice==='pending'?new Promise(resolve=>finishInitialize=resolve):initializeChoice;};context.ClientLifecycle.chooseRestart=client=>{restarts.push(client.id);return Promise.resolve(restartChoice);};
   const C=vm.runInContext('ClientNavigation',context),nav=Object.create(C.prototype),painted=[];
   Object.assign(nav,{clients:[{id:'codex',enabled:true,configured:true},{id:'claude',enabled:true,configured:true},{id:'deepseek',enabled:true,configured:true}],provider:'claude',revision:0,pending:new Set(),notify(){},rememberSwipeList(){},paint(){painted.push(this.clients.filter(c=>c.enabled).map(c=>c.id));},view:{provider:'claude',choose(id){this.provider=id;return Promise.resolve();}}});
-  return {nav,painted,choices,document:context.document,window:context.window,setChoice:value=>choice=value,decide:value=>finishChoice(value),mobile:value=>mobile=value,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value)};
+  return {nav,painted,choices,document:context.document,window:context.window,setChoice:value=>choice=value,decide:value=>finishChoice(value),mobile:value=>mobile=value,initializations,setInitializeChoice:value=>initializeChoice=value,decideInitialize:value=>finishInitialize(value),restarts,setRestartChoice:value=>restartChoice=value};
 }
 function networkPanel(nav){
   const panel={section:{},box:{setAttribute(){}},status:{},refresh:{}};
@@ -566,4 +566,143 @@ test('account management owns the shared connection chooser and releases its sta
  assert.equal(values.at(-1).client.connectionMode,'official-remote');await values.at(-1).select('private-pipe');assert.deepEqual(selected,[['zcode','private-pipe']]);
  nav.pending.add('zcode');for(const render of nav.accountManagementRenderers)render();assert.equal(values.at(-1).disabled,true);
  nav.pending.clear();nav.clients[0].connectionMode='private-pipe';for(const render of nav.accountManagementRenderers)render();assert.equal(values.at(-1).client.connectionMode,'private-pipe');release();assert.equal(nav.accountManagementRenderers.size,0);
+});
+
+test('app management offers confirmed desktop restart for running apps including unconnected DSH and Codex recovery',async()=>{
+ const ui=managerFixture(),nav=ui.nav,calls=[];
+ nav.request=async(url,body)=>{calls.push({url,body});return {clients:nav.clients};};
+ nav.gatewayRunning=true;
+ const dsh={id:'deepseek',name:'DSH',enabled:false,installed:true,selectable:true,running:true,connected:false,canForceQuit:true};
+ const dshConnected={id:'deepseek',name:'DSH',enabled:true,installed:true,selectable:true,running:true,connected:true,canForceQuit:true};
+ const dshMulti={id:'deepseek',name:'DSH',enabled:false,installed:true,selectable:true,running:true,connected:false,canForceQuit:false};
+ const codex={id:'codex',name:'Codex',enabled:true,installed:true,configured:true,running:true,connected:true,desktopRestartRecommended:true};
+ const antigravity={id:'antigravity',name:'Antigravity',enabled:false,installed:true,selectable:true,running:true,connected:false,canQuitDesktop:false};
+ const manual={id:'deepseek',name:'DSH',enabled:false,installed:true,selectable:true,running:true,connected:false,bindingMode:'manual'};
+ nav.clients=[codex,dsh,antigravity];nav.renderManager();
+ const buttons=id=>{const row=ui.controls().find(n=>n.dataset?.clientId===id);return row?row.children.at(-1).children:[];};
+ assert.ok(buttons('codex').some(b=>b.textContent==='重启并接入'));
+ assert.ok(buttons('deepseek').some(b=>b.textContent==='重启并接入'));
+ assert.equal(buttons('antigravity').some(b=>/重启/.test(b.textContent||'')),false);
+ const dshRestart=buttons('deepseek').find(b=>b.textContent==='重启并接入');
+ ui.setRestartChoice(false);await dshRestart.onclick();assert.equal(calls.length,0);
+ ui.setRestartChoice('force');await dshRestart.onclick();
+ assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),{url:'/api/clients',body:{provider:'deepseek',enabled:true,restartDesktop:true,forceDesktop:true,forceConfirmed:true}});
+ const codexRestart=buttons('codex').find(b=>b.textContent==='重启并接入');
+ ui.setRestartChoice('recovery');await codexRestart.onclick();
+ assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),{url:'/api/clients',body:{provider:'codex',enabled:true,restartDesktop:true,acknowledgeUnavailable:true}});
+ nav.clients=[dshConnected];nav.renderManager();
+ const dshNormal=buttons('deepseek').find(b=>b.textContent==='重启 App');assert.ok(dshNormal);
+ ui.setRestartChoice(true);await dshNormal.onclick();
+ assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),{url:'/api/clients',body:{provider:'deepseek',enabled:true,restartDesktop:true}});
+ nav.clients=[dshMulti];nav.renderManager();
+ assert.equal(buttons('deepseek').some(b=>/重启/.test(b.textContent||'')),false);
+ nav.clients=[manual];nav.renderManager();
+ assert.equal(buttons('deepseek').some(b=>/重启/.test(b.textContent||'')),false);
+});
+
+test('chooseRestart shows explicit force-restart confirmation for unconnected DSH',async()=>{
+ const dialogs=[],nodes=[];
+ const makeNode=tag=>{
+  const listeners={},el={tagName:tag.toUpperCase(),children:[],dataset:{},attributes:{},className:'',textContent:'',focused:false,
+   append(...items){this.children.push(...items);},
+   setAttribute(k,v){this.attributes[k]=v;},
+   addEventListener(type,fn){(listeners[type]??=[]).push(fn);},
+   showModal(){this.open=true;},
+   close(){this.open=false;for(const fn of listeners.close||[])fn();},
+   remove(){const i=dialogs.indexOf(this);if(i>=0)dialogs.splice(i,1);},
+   focus(){this.focused=true;},
+   querySelectorAll(){return [];},
+  };
+  if(tag==='dialog')dialogs.push(el);
+  nodes.push(el);return el;
+ };
+ const ctx=vm.createContext({BridgeI18n:{t:s=>s},ClientIdentity:require('../web/features/clients/client-lifecycle.js').ClientIdentity,document:{createElement:makeNode,body:{append(){}}}});
+ vm.runInContext(fs.readFileSync('web/features/clients/client-lifecycle.js','utf8'),ctx);
+ const choose=vm.runInContext('ClientLifecycle.chooseRestart',ctx);
+ assert.equal(await choose({id:'deepseek',name:'DSH',connected:false,running:true,canForceQuit:false}),false);
+ const pCancel=choose({id:'deepseek',name:'DSH',connected:false,running:true,canForceQuit:true});
+ const d1=dialogs.at(-1);assert.ok(d1);
+ assert.equal(d1.children[0].textContent,'强制重启并接入');
+ const btns1=d1.children.at(-1).children;
+ assert.equal(btns1[0].textContent,'确认强制重启并接入');assert.equal(btns1[0].className,'client-force-confirm');
+ assert.equal(btns1[1].textContent,'取消');assert.equal(btns1[1].focused,true);
+ btns1[1].onclick();assert.equal(await pCancel,false);
+ const pConfirm=choose({id:'deepseek',name:'DSH',connected:false,running:true,canForceQuit:true});
+ dialogs.at(-1).children.at(-1).children[0].onclick();
+ assert.equal(await pConfirm,'force');
+});
+
+test('bindChatListToolbar enhances filter selects into synced custom dropdowns without clipped width',()=>{
+ const observers=[];
+ const makeEl=tag=>{
+  const listeners={},el={tagName:tag.toUpperCase(),children:[],dataset:{},attributes:{},style:{},className:'',textContent:'',hidden:false,disabled:false,focused:false,
+   classList:{set:new Set(),add(...names){names.forEach(n=>this.set.add(n));},contains(n){return this.set.has(n);}},
+   append(...items){items.forEach(item=>{item.parentElement=this;this.children.push(item);});},
+   replaceChildren(...items){this.children=[];this.append(...items);},
+   after(...items){if(!this.parentElement)return;const i=this.parentElement.children.indexOf(this);items.forEach((it,off)=>{it.parentElement=this.parentElement;this.parentElement.children.splice(i+1+off,0,it);});},
+   remove(){if(this.parentElement){const i=this.parentElement.children.indexOf(this);if(i>=0)this.parentElement.children.splice(i,1);this.parentElement=null;}},
+   contains(target){return target===this||this.children.some(c=>c.contains?.(target));},
+   setAttribute(k,v){this.attributes[k]=v;},
+   getAttribute(k){return this.attributes[k];},
+   addEventListener(type,fn){(listeners[type]??=[]).push(fn);},
+   removeEventListener(type,fn){if(listeners[type])listeners[type]=listeners[type].filter(f=>f!==fn);},
+   dispatchEvent(evt){for(const fn of listeners[evt.type]||[])fn(evt);},
+   querySelectorAll(sel){if(sel.includes('.filter-dropdown-item'))return this.children.filter(c=>!c.disabled);return sel==='select'?this.children.filter(c=>c.tagName==='SELECT'):[];},
+   querySelector(sel){if(sel==='[aria-selected="true"]:not(:disabled)')return this.children.find(c=>c.attributes['aria-selected']==='true'&&!c.disabled);return this.children.find(c=>c.className.includes('filter-dropdown-item'));},
+   getBoundingClientRect(){return {left:20,top:90,bottom:118,width:84,height:28};},
+   focus(){this.focused=true;},
+  };
+  if(tag==='select'){
+   let _val='';
+   Object.defineProperty(el,'options',{get(){return this.children;}});
+   Object.defineProperty(el,'selectedOptions',{get(){const f=this.children.find(o=>o.value===_val)||this.children[0];return f?[f]:[];}});
+   Object.defineProperty(el,'value',{configurable:true,get(){return _val;},set(v){_val=v;}});
+  }
+  return el;
+ };
+ const docListeners={},winListeners={},body=makeEl('body'),toolbar=makeEl('div');
+ toolbar.dataset={};
+ const source=makeEl('select');source.id='source-filter';source.setAttribute('aria-label','会话类型');
+ for(const [v,t] of [['all','全部会话'],['cli','CLI'],['desktop','APP']]){const o=makeEl('option');o.value=v;o.textContent=t;source.append(o);}
+ source.value='all';
+ const mode=makeEl('select');mode.id='list-mode';mode.setAttribute('aria-label','聊天列表显示方式');
+ for(const [v,t] of [['recent','最近交互'],['project','按项目']]){const o=makeEl('option');o.value=v;o.textContent=t;mode.append(o);}
+ mode.value='recent';
+ toolbar.append(source,mode);
+ const ctx=vm.createContext({
+  document:{createElement:makeEl,body,activeElement:null,addEventListener(t,fn){(docListeners[t]??=[]).push(fn);},removeEventListener(t,fn){if(docListeners[t])docListeners[t]=docListeners[t].filter(f=>f!==fn);}},
+  window:{addEventListener(t,fn){(winListeners[t]??=[]).push(fn);},removeEventListener(t,fn){if(winListeners[t])winListeners[t]=winListeners[t].filter(f=>f!==fn);}},
+  innerWidth:390,innerHeight:844,Event:class{constructor(type){this.type=type;}},
+  requestAnimationFrame:fn=>{fn();return 1;},cancelAnimationFrame(){},
+  MutationObserver:class{constructor(cb){this.cb=cb;observers.push(this);}observe(){}},
+  Node:class{},
+ });
+ ctx.ClientIdentity=require('../web/features/clients/client-lifecycle.js').ClientIdentity;
+ vm.runInContext(fs.readFileSync('web/features/clients/client-navigation.js','utf8'),ctx);
+ ctx.bindChatListToolbar(toolbar);
+ assert.equal(source.style.width,'');
+ assert.equal(mode.style.width,'');
+ assert.equal(source.classList.contains('filter-select-native'),true);
+ const triggers=toolbar.children.filter(c=>c.className==='filter-dropdown-trigger');
+ assert.equal(triggers.length,2);
+ assert.equal(triggers[0].children[0].textContent,'全部会话');
+ assert.equal(triggers[1].children[0].textContent,'最近交互');
+ const changes=[];mode.addEventListener('change',()=>changes.push(mode.value));
+ triggers[1].onclick({preventDefault(){},stopPropagation(){}});
+ assert.equal(triggers[1].getAttribute('aria-expanded'),'true');
+ const menu=body.children.at(-1);
+ assert.equal(menu.className,'filter-dropdown-menu');
+ assert.deepEqual(menu.children.map(i=>i.children[0].textContent),['最近交互','按项目']);
+ assert.equal(menu.children[0].getAttribute('aria-selected'),'true');
+ menu.children[1].onclick({preventDefault(){},stopPropagation(){}});
+ assert.equal(mode.value,'project');
+ assert.deepEqual(changes,['project']);
+ assert.equal(triggers[1].children[0].textContent,'按项目');
+ assert.equal(triggers[1].getAttribute('aria-expanded'),'false');
+ assert.equal(body.children.length,0);
+ triggers[0].onclick({preventDefault(){},stopPropagation(){}});
+ assert.equal(body.children.length,1);
+ (docListeners.keydown||[]).forEach(fn=>fn({key:'Escape',preventDefault(){},stopPropagation(){}}));
+ assert.equal(body.children.length,0);
+ assert.equal(triggers[0].focused,true);
 });

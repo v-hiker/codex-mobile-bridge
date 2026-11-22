@@ -65,7 +65,7 @@ const ClientLifecycle=(()=>{
     return {action,message:error.message,uncertain};
   }
   function failureMessage(value){return value.uncertain?'操作结果尚未确认，请刷新状态后再重试。':value.message;}
-  function retryLabel(action){return ({enable:'重试开启',quit:'重试退出',force:'重试后台强制结束',disable:'重试停用',initialize:'重试初始化','connect-wsl':'启动并连接 WSL'})[action]||'重试操作';}
+  function retryLabel(action){return ({enable:'重试开启',restart:'重试重启',quit:'重试退出',force:'重试后台强制结束',disable:'重试停用',initialize:'重试初始化','connect-wsl':'启动并连接 WSL'})[action]||'重试操作';}
   function reconcile(failures,clients){
     for(const [id,value] of failures||[]){
       if(!value.uncertain)continue;const client=clients.find(row=>row.id===id);
@@ -76,7 +76,7 @@ const ClientLifecycle=(()=>{
       }
       const ready=client&&(client.connected||client.setupStatus==='session-access');
       const initialized=id==='zcode'?value.connectionMode==='private-pipe'&&(client?.pipeReady===true||ready&&client.pipeSupported===true):client&&(client.connected||connection(client).waiting);
-      const completed=client&&(['quit','force'].includes(value.action)?client.enabled===false&&client.running===false:value.action==='disable'?client.enabled===false:value.action==='initialize'?initialized:value.action==='enable'?(!value.connectionMode||client.connectionMode===value.connectionMode)&&client.enabled&&(client.running||client.connected||connection(client).waiting):false);
+      const completed=client&&(['quit','force'].includes(value.action)?client.enabled===false&&client.running===false:value.action==='disable'?client.enabled===false:value.action==='initialize'?initialized:['enable','restart'].includes(value.action)?(!value.connectionMode||client.connectionMode===value.connectionMode)&&client.enabled&&(client.running||client.connected||connection(client).waiting):false);
       if(completed)failures.delete(id);else failures.set(id,{...value,uncertain:false,message:client?.reason||'状态已刷新，可重试上次操作。'});
     }
   }
@@ -192,6 +192,55 @@ const ClientLifecycle=(()=>{
       dialog.addEventListener('cancel',event=>{event.preventDefault();finish(null);});dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});document.body.append(dialog);dialog.showModal();cancel.focus();
     });
   }
-  return {chooseDisable,chooseForce,chooseInitialize,mountConnectionModes,confirmConnectionMode,connectionModes,connectionModeLabel,initializationFields,connection,connectWsl,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
+  function confirmForceRestart(client){
+    return new Promise(resolve=>{
+      const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
+      const node=(tag,text)=>{const element=document.createElement(tag);element.dataset.i18n=text;element.textContent=BridgeI18n.t(text);return element;};
+      const title=node('h2','强制重启并接入');
+      const description=node('p','当前应用尚未建立网关连接，无法核验运行中的任务或通过原生菜单正常退出。确认后会强制结束当前进程并重新启动以接入网关（可能中断未保存任务）；若需先保存进度，请点取消并在电脑端手动退出后再启用。');
+      const identity=document.createElement('p');identity.textContent=client.name||client.id;
+      const id='client-restart-force-'+(++sequence);title.id=id+'-title';description.id=id+'-description';
+      dialog.setAttribute('aria-labelledby',title.id);dialog.setAttribute('aria-describedby',description.id);
+      const actions=document.createElement('div');actions.className='client-disable-options';let choice=false;
+      const finish=value=>{choice=value;dialog.close();};
+      const confirm=node('button','确认强制重启并接入'),cancel=node('button','取消');
+      confirm.type=cancel.type='button';confirm.className='client-force-confirm';
+      confirm.onclick=()=>finish('force');cancel.onclick=()=>finish(false);
+      actions.append(confirm,cancel);dialog.append(title,identity,description,actions);
+      dialog.addEventListener('cancel',event=>{event.preventDefault();finish(false);});
+      dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});
+      document.body.append(dialog);dialog.showModal();cancel.focus();
+    });
+  }
+  async function chooseRestart(client){
+    const family=ClientIdentity.family(client.id),ready=connection(client).ready,forceOnly=family==='deepseek'&&!ready;
+    if(forceOnly)return client.canForceQuit===true?confirmForceRestart(client):false;
+    const choice=await new Promise(resolve=>{
+      const dialog=document.createElement('dialog');dialog.className='client-disable-dialog';
+      const node=(tag,text)=>{const element=document.createElement(tag);element.dataset.i18n=text;element.textContent=BridgeI18n.t(text);return element;};
+      const reconnect=!ready||client.desktopRestartRecommended===true;
+      const recoverCodex=client.id==='codex'&&client.desktopRestartRecommended===true;
+      const title=node('h2',reconnect?'重启并接入':'重启电脑 App');
+      const description=node('p',recoverCodex
+        ?'当前桌面原会话尚未连接网关，可能无法核验全部任务。确认后会尝试通过 Codex 原生菜单正常退出并重新启动以恢复接入；若检测到已知运行中的任务会自动停止。'
+        :'会先核对当前没有运行中或待确认的任务，再正常退出并重新启动此电脑应用以建立网关连接；若有活动任务会自动停止，不会强制结束进程。');
+      const identity=document.createElement('p');identity.textContent=client.name||client.id;
+      const id='client-restart-'+(++sequence);title.id=id+'-title';description.id=id+'-description';
+      dialog.setAttribute('aria-labelledby',title.id);dialog.setAttribute('aria-describedby',description.id);
+      const actions=document.createElement('div');actions.className='client-disable-options';let choice=false;
+      const finish=value=>{choice=value;dialog.close();};
+      const confirm=node('button',reconnect?'确认重启并接入':'确认重启'),cancel=node('button','取消');
+      confirm.type=cancel.type='button';confirm.className='client-restart-confirm';
+      confirm.onclick=()=>finish(recoverCodex?'recovery':true);cancel.onclick=()=>finish(false);
+      actions.append(confirm);
+      if(!ready&&client.canForceQuit===true){const force=node('button','强制重启并接入…');force.type='button';force.className='client-force-confirm';force.onclick=()=>finish('force-prompt');actions.append(force);}
+      actions.append(cancel);dialog.append(title,identity,description,actions);
+      dialog.addEventListener('cancel',event=>{event.preventDefault();finish(false);});
+      dialog.addEventListener('close',()=>{dialog.remove();resolve(choice);},{once:true});
+      document.body.append(dialog);dialog.showModal();cancel.focus();
+    });
+    return choice==='force-prompt'?confirmForceRestart(client):choice;
+  }
+  return {chooseDisable,chooseForce,chooseInitialize,chooseRestart,mountConnectionModes,confirmConnectionMode,connectionModes,connectionModeLabel,initializationFields,connection,connectWsl,request,failure,failureMessage,retryLabel,reconcile,sessionNotice};
 })();
 if(typeof module!=='undefined')module.exports={...ClientLifecycle,ClientIdentity};

@@ -1,10 +1,11 @@
-.workbench-tabs{display:flex;align-items:center;gap:4px;padding:4px 16px;border-bottom:1px solid var(--line);min-height:44px;flex:none;background:var(--page)}
+.workbench-tabs{display:flex;align-items:center;gap:6px;padding:4px 20px;border-bottom:1px solid var(--line);min-height:38px;flex:none;background:color-mix(in srgb,var(--surface) 45%,var(--page))}
 .wb-tabs{display:flex;gap:5px;overflow-x:auto;min-width:0;flex:1;scrollbar-width:thin}
-.workbench-tabs button{border:0;background:transparent;color:var(--muted);min-height:36px;border-radius:8px;font-size:13px}
-.wb-tab{display:flex;align-items:center;border-radius:8px;flex:none;max-width:200px;border:1px solid transparent}
-.wb-tab.selected{background:var(--surface);border-color:var(--line)}
+.workbench-tabs button{border:0;background:transparent;color:var(--muted);min-height:30px;border-radius:8px;font-size:12.5px}
+.wb-tab{display:flex;align-items:center;border-radius:8px;flex:none;max-width:200px;border:1px solid transparent;transition:background-color .14s ease,border-color .14s ease,color .14s ease,box-shadow .14s ease}
+.wb-tab:hover:not(.selected){background:var(--surface)}
+.wb-tab.selected{background:var(--raised);border-color:var(--line);box-shadow:var(--shadow-xs);font-weight:550}
 .wb-tab.selected button{color:var(--text)}
-.wb-tab button:first-child{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:0;text-align:left;padding:6px 12px}
+.wb-tab button:first-child{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:0;text-align:left;padding:4px 10px}
 .wb-tab button+button{width:32px;padding:0;flex:none}.wb-add{font-size:22px!important;width:40px;flex:none}
 #chat.workbench-active .wb-main-pane{display:none!important}
 .workbench-panel{flex:1;min-height:0;overflow:hidden;background:var(--page)}
@@ -21,7 +22,7 @@
 @media(max-width:720px){.wb-file-summary{padding-right:12px}}
 .wb-file-list{flex:1;overflow:auto;padding:0 12px 16px;min-height:0;overscroll-behavior:contain}
 .wb-file{display:flex;align-items:center;gap:12px;width:100%;min-height:54px;padding:10px 12px;text-align:left;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--text);border-radius:0}
-.wb-file:hover{background:var(--surface)}.wb-file-icon{font-size:23px;width:26px;color:var(--muted);flex:none}.wb-file-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}.wb-file-meta{color:var(--muted);font-size:11px;flex:none}
+.wb-file:hover{background:var(--surface)}.wb-file-icon{font-size:23px;width:26px;color:var(--muted);flex:none}.wb-file-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}.wb-file-meta{color:var(--muted);font-size:11px;flex:none;font-variant-numeric:tabular-nums}
 .wb-file.wb-locate-highlight{animation:wb-locate-highlight 3.4s ease-out}
 @keyframes wb-locate-highlight{0%,88%{background:#dcecff;box-shadow:inset 0 0 0 2px #79aef0}100%{background:transparent;box-shadow:inset 0 0 0 2px transparent}}
 @media(prefers-reduced-motion:reduce){.wb-file.wb-locate-highlight{animation:none;background:#dcecff;box-shadow:inset 0 0 0 2px #79aef0}}
@@ -42,7 +43,7 @@
 .wb-upload form{display:grid;gap:14px}.wb-upload h2{margin:0}.wb-upload-target{overflow-wrap:anywhere;font-size:13px;margin:0}.wb-upload input{width:100%;min-height:42px;font-size:16px}.wb-upload progress{width:100%}.wb-upload .error:empty,.wb-upload .wb-status:empty{display:none}
 @media(max-width:720px){.workbench-tabs{padding:3px 10px;min-height:42px}.wb-tab{max-width:155px}.wb-tab button:first-child{padding:6px 10px}.wb-toolbar{padding:12px 12px 6px;gap:6px}.wb-toolbar button{padding:5px 10px}.wb-filters{padding:6px 12px;gap:8px}.wb-search input{font-size:16px}.wb-search button{padding:5px 8px}.wb-status{padding:4px 12px}.wb-file-list{padding:0 4px 12px}.wb-file{gap:8px}.wb-file-meta{max-width:82px;overflow:hidden;text-overflow:ellipsis}.wb-preview-head{padding:12px}.wb-preview-content{padding:12px;padding-bottom:max(12px,env(safe-area-inset-bottom))}}
 
-.wb-preview-content .markdown-body{max-width:960px;margin:0 auto}.wb-preview-content .code-block pre{padding:40px 14px 14px;background:var(--code);border:1px solid var(--line);border-radius:10px;overflow:auto;font:13px/1.65 ui-monospace,SFMono-Regular,monospace}
+.wb-preview-content .markdown-body{max-width:960px;margin:0 auto}.wb-preview-content .code-block pre{margin:0;border:0;border-radius:0;padding:42px 14px 14px;background:var(--code);overflow:auto;font:13px/1.65 ui-monospace,SFMono-Regular,monospace}
 
 .wb-file-icon{--wb-icon:#657489;display:flex;align-items:center;justify-content:center;width:36px;height:40px;color:var(--wb-icon);flex:none}
 .wb-file-icon svg{display:block;width:32px;height:36px;overflow:visible}.wb-file-icon svg text{fill:currentColor;font:700 8px/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:.2px}
@@ -141,9 +142,9 @@
 
 /* Each split pane owns its header; the divider aligns with that header boundary. */
 .wb-tool-strip{display:flex;align-items:center;gap:6px;flex:1;min-width:0}
-.workbench-tabs .wb-add,.workbench-tabs .wb-split-button{display:flex;align-items:center;justify-content:center;width:36px;height:36px;min-height:36px;padding:8px;border:1px solid transparent;border-radius:9px;line-height:1}
+.workbench-tabs .wb-add,.workbench-tabs .wb-split-button{display:flex;align-items:center;justify-content:center;width:30px;height:30px;min-height:30px;padding:6px;border:1px solid transparent;border-radius:8px;line-height:1}
 .workbench-tabs .wb-add:hover,.workbench-tabs .wb-split-button:hover{background:var(--surface);border-color:var(--line)}
-.workbench-tabs .wb-add svg,.workbench-tabs .wb-split-button svg{display:block;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.workbench-tabs .wb-add svg,.workbench-tabs .wb-split-button svg{display:block;width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .workbench-tabs .wb-main-label{display:none}
 .wb-split .workbench-tabs{display:grid;grid-template-columns:var(--wb-left,calc(50% - var(--wb-divider-width,8px)/2)) var(--wb-divider-width,8px) minmax(0,1fr);gap:0;margin:0 12px;padding:8px 0;border-bottom:0;background:transparent;min-height:54px}
 .wb-split .wb-main-label{display:flex;align-items:center;gap:9px;justify-content:flex-start;padding:0 12px;color:var(--text);font-weight:600;font-size:13px;cursor:default}

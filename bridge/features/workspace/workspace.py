@@ -723,6 +723,24 @@ class GitWorkspace:
             return {'outcome': 'success', 'message': labels[action], 'state': result}
 
 
+def _relative_project_path(path, project):
+    if not project:
+        return None
+    try:
+        relative = path.relative_to(project).as_posix()
+        return '' if relative == '.' else relative
+    except ValueError:
+        if os.name != 'nt':
+            return None
+    path_clean = Path(display_absolute_path(str(path)))
+    project_clean = Path(display_absolute_path(str(project)))
+    if len(path_clean.parts) < len(project_clean.parts):
+        return None
+    if tuple(part.casefold() for part in path_clean.parts[:len(project_clean.parts)]) != tuple(part.casefold() for part in project_clean.parts):
+        return None
+    return '/'.join(path_clean.parts[len(project_clean.parts):])
+
+
 def host_operation(root, action, params, history_path=None):
     """Explicit read-only host navigation; project writes keep their old root."""
     if action not in ('list', 'info', 'preview', 'download', 'download-stream', 'archive-stream'):
@@ -732,6 +750,10 @@ def host_operation(root, action, params, history_path=None):
     value = params.pop('path', '')
     if not isinstance(value, str) or len(value) > 4096 or any(ord(c) < 32 for c in value):
         raise ValueError('文件路径无效')
+    if value[:8].lower() in ('\\\\?\\unc\\', '//?/unc/'):
+        value = ('//' if value.startswith('//') else '\\\\') + value[8:]
+    elif len(value) >= 7 and value[:4] in ('\\\\?\\', '//?/') and re.match(r'^[A-Za-z]:[\\/]', value[4:7]):
+        value = value[4:]
     project = Path(root).resolve() if root and Path(root).is_absolute() else None
     start = project or (Path(history_path).parent.resolve() if history_path and Path(history_path).is_absolute() else None)
     path = Path(value) if value else start
@@ -756,11 +778,7 @@ def host_operation(root, action, params, history_path=None):
         return result  # Keep the existing streaming context manager intact.
     absolute = display_absolute_path(str(path)).replace(os.sep, '/')
     result.update(path=absolute, absolutePath=absolute)
-    try:
-        result['projectPath'] = path.relative_to(project).as_posix() if project else None
-        if result['projectPath'] == '.': result['projectPath'] = ''
-    except ValueError:
-        result['projectPath'] = None
+    result['projectPath'] = _relative_project_path(path, project)
     if action == 'list':
         result['project'] = display_absolute_path(str(project)).replace(os.sep, '/') if project else ''
         result['parentPath'] = display_absolute_path(str(path.parent)).replace(os.sep, '/') if path != anchor else None
