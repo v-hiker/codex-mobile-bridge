@@ -157,7 +157,7 @@ function feedback(text,error=false,kind=''){
   lastFeedback=[text,error,kind];text=t(text.replace(/^Error invoking remote method '[^']+': (?:Error: )?/,''));
   if(kind==='gateway'){
     feedbackKind=kind;$('error').hidden=!error;$('feedback').hidden=error;
-    const target=$(error?'error':'feedback');if(target.textContent!==text)target.textContent=text;return;
+    const target=$(error?'error':'feedback');target.dataset.kind=kind;if(target.textContent!==text)target.textContent=text;return;
   }
   clearTimeout(toastTimer);$('toast').hidden=false;$('toast').classList.toggle('is-error',error);
   $('toast-message').textContent=text;$('toast-message').setAttribute('role',error?'alert':'status');
@@ -191,6 +191,7 @@ function showError(error){
 
 function moduleName(name){return ({account:'accounts','desktop-sessions':'accounts',harness:'accounts',updates:'advanced',logs:'advanced'})[name]||name;}
 function tab(name){const requested=name;name=moduleName(name);activeTab=name;
+  if(document.body?.dataset)document.body.dataset.tab=name;
   if(name==='advanced')activeMaintenanceTab=['updates','logs'].includes(requested)?requested:'general';
   if(name!=='notifications')hideWebhookUrl();
   if(name!=='accounts'&&typeof claudeCliAccessPanel!=='undefined')claudeCliAccessPanel?.clear();
@@ -454,6 +455,7 @@ function applyLanguage(value){
   if(lastFeedback)feedback(...lastFeedback);
   tab(activeTab==='advanced'&&activeMaintenanceTab!=='general'?activeMaintenanceTab:activeTab);
   renderPairing();if(devicesState)renderDevices(devicesState);
+  window.BridgeSelects?.syncAll?.();
 }
 $('language').value=BridgeI18n.language();
 $('language').onchange=async()=>{

@@ -117,6 +117,26 @@ class PreparePreflightTests(unittest.TestCase):
                     digest.assert_not_called()
             self.assertEqual(list(base.glob('.cmb-update-*')), [])
 
+    def test_protected_install_dir_permission_error_surfaces_clear_guidance(self):
+        root = Path(__file__).resolve().parents[1] / '.tmp'
+        root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as directory:
+            base = Path(directory).resolve()
+            target, data, archive = base / 'app', base / 'data', base / 'update.zip'
+            target.mkdir(); data.mkdir()
+            with zipfile.ZipFile(archive, 'w') as zf:
+                zf.writestr('placeholder.txt', 'ok')
+            digest = __import__('hashlib').sha256(archive.read_bytes()).hexdigest()
+            with patch.object(updater.sys, 'platform', 'win32'):
+                app, worker, _ = updater.locations(target)
+                worker.parent.mkdir(parents=True)
+                app.touch(); worker.touch()
+                with patch.object(updater, 'preflight'), \
+                     patch.object(updater, 'validate_transition', return_value=None), \
+                     patch.object(updater.tempfile, 'mkdtemp', side_effect=PermissionError('access denied')):
+                    with self.assertRaisesRegex(ValueError, '需要管理员权限'):
+                        updater.prepare(data, {'target': str(target), 'archive': str(archive), 'sha256': digest})
+
 
 class TransactionTests(unittest.TestCase):
     def setUp(self):

@@ -256,7 +256,7 @@ test('real archive evidence requires the trusted digest and exact per-attempt pa
   t.after(()=>fs.rm(directory,{recursive:true,force:true}));
   const archive=path.join(directory,'verified.zip'),bytes=Buffer.from('Retained actual archive bytes');
   const asset={name:'Codex-Mobile-Bridge-2.2.1-Windows-x64.zip',sha256:createHash('sha256').update(bytes).digest('hex')};
-  const url='https://github.com/try2love/codex-mobile-bridge/releases/download/v2.2.1/'+asset.name;
+  const url='https://github.com/v-hiker/codex-mobile-bridge/releases/download/v2.2.1/'+asset.name;
   await fs.writeFile(archive,bytes);
   const first=await verifiedArchiveProof(archive,asset,[url],1),retry=await verifiedArchiveProof(archive,asset,[],0);
   assert.equal(first.archive,retry.archive);assert.equal(first.sha256,retry.sha256);

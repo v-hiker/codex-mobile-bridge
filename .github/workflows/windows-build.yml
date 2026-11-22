@@ -1,15 +1,36 @@
 name: Windows installer build
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Sign update manifest and publish GitHub Release on fork
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      publish_release:
+        description: Sign update manifest and publish GitHub Release on fork
+        type: boolean
+        default: true
+      checkout_ref:
+        description: Commit SHA or git ref to build
+        type: string
+        default: ''
+      release_notes:
+        description: Release notes markdown body
+        type: string
+        default: ''
   push:
-    branches: [fix/windows-cua-browser-and-discovery]
+    branches: [main, fix/windows-cua-browser-and-discovery]
 permissions:
-  contents: read
+  contents: write
 jobs:
   windows-installer:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -31,6 +52,34 @@ jobs:
         run: python scripts/build-desktop.py
       - name: Build Windows NSIS installer and portable ZIP
         run: npm run build:windows
+      - name: Sign fork update manifest and checksums
+        shell: bash
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release == true }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            if [ "$PUBLISH_RELEASE" = "true" ]; then
+              echo "ERROR: UPDATE_SIGNING_KEY secret is required when publish_release=true." >&2
+              exit 1
+            fi
+            echo "UPDATE_SIGNING_KEY secret is not configured; skipping fork manifest signing."
+            exit 0
+          fi
+          if [ -n "$RELEASE_NOTES" ]; then
+            printf '%s\n' "$RELEASE_NOTES" > dist/release-notes.txt
+          else
+            COMMIT_SHA=$(git rev-parse --short HEAD)
+            cat > dist/release-notes.txt <<EOF
+          Fork automated build v${VERSION} (${COMMIT_SHA})
+          - Includes fork Windows UAC custom-directory installer support, tunnel Job Object cleanup, Codex navigation/runtime fixes, and modernized desktop UI.
+          - Signed with fork Ed25519 key for in-app updates from v-hiker/codex-mobile-bridge.
+          EOF
+          fi
+          node scripts/sign-fork-update.cjs "$VERSION" dist/desktop --notes-file dist/release-notes.txt
       - name: Upload Windows installer artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -39,3 +88,45 @@ jobs:
           path: |
             dist/desktop/*.exe
             dist/desktop/*.zip
+            dist/desktop/bridge-update.json
+            dist/desktop/SHA256SUMS.txt
+      - name: Publish signed GitHub Release on fork
+        if: ${{ inputs.publish_release == true }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v${VERSION}"
+          HEAD_SHA=$(git rev-parse HEAD)
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$TAG" "$HEAD_SHA"
+          git push origin "refs/tags/${TAG}" --force
+
+          shopt -s nullglob
+          ASSETS=(dist/desktop/*.exe dist/desktop/*.zip dist/desktop/bridge-update.json dist/desktop/SHA256SUMS.txt)
+          if [ ${#ASSETS[@]} -eq 0 ]; then
+            echo "No release assets found in dist/desktop." >&2
+            exit 1
+          fi
+
+          EXTRA_FLAGS=()
+          if [[ "$VERSION" == *-* ]]; then
+            EXTRA_FLAGS+=(--prerelease)
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            if [ -f dist/release-notes.txt ]; then
+              gh release edit "$TAG" --notes-file dist/release-notes.txt
+            fi
+          else
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --target "$HEAD_SHA" \
+              --title "Codex Mobile Bridge $TAG" \
+              --notes-file dist/release-notes.txt \
+              "${EXTRA_FLAGS[@]}"
+          fi

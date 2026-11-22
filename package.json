@@ -126,7 +126,7 @@
       "artifactName": "Codex-Mobile-Bridge-${version}-Windows-${arch}-Setup.${ext}",
       "oneClick": false,
       "perMachine": false,
-      "allowElevation": false,
+      "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
       "include": "desktop/installer.nsh",
       "createDesktopShortcut": true,

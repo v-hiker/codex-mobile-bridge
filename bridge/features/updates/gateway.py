@@ -507,7 +507,12 @@ def prepare(data_dir, payload):
         raise ValueError('更新包校验失败，已取消安装。')
     reject_pending_transaction(target)
     clean_transactions(target)
-    transaction = Path(tempfile.mkdtemp(prefix='.cmb-update-', dir=target.parent))
+    try:
+        transaction = Path(tempfile.mkdtemp(prefix='.cmb-update-', dir=target.parent))
+    except PermissionError as exc:
+        raise ValueError(
+            '当前安装目录需要管理员权限，无法直接应用内覆盖更新。请在下方的“历史版本与安装包”选择 Windows 安装包（.exe）下载安装，或以管理员身份运行后再更新。'
+        ) from exc
     os.chmod(transaction, 0o700)
     try:
         # Record ownership before preparation, including for interrupted builds.

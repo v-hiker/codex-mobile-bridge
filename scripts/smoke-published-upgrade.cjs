@@ -135,7 +135,7 @@ function transportScript(directory,includeCandidate=false,includePreview2=false)
     globalThis.acceptance={dialogs:[],response:null,opened:[],packagesOpened:[],requests:[]};
     electron.dialog.showMessageBox=async(...args)=>{const options=args.at(-1);acceptance.dialogs.push(options);
       return acceptance.response===null?show(...args):{response:acceptance.response,checkboxChecked:false};};
-    electron.shell.openExternal=async url=>{if(url!=='https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1')throw Error('Unexpected release handoff');acceptance.opened.push(url);};
+    electron.shell.openExternal=async url=>{if(url!=='https://github.com/v-hiker/codex-mobile-bridge/releases/tag/v2.2.1')throw Error('Unexpected release handoff');acceptance.opened.push(url);};
     electron.shell.openPath=async archive=>{
       const updater=acceptance.updater,candidate=updater.candidate;
       const expected=path.join(updater.directory,module.cacheName(candidate,updater.platform,updater.arch,candidate.format||updater.format));
@@ -226,7 +226,7 @@ async function stopLaunchedGui(planFile){
   await until(()=>{try{process.kill(pid,0);return false;}catch(error){if(error.code==='ESRCH')return true;throw error;}},'helper-owned GUI exit');
 }
 async function verifiedArchiveProof(archive,asset,requests,expectedDownloads){
-  const url=`https://github.com/try2love/codex-mobile-bridge/releases/download/v${oldVersion}/${asset.name}`;
+  const url=`https://github.com/v-hiker/codex-mobile-bridge/releases/download/v${oldVersion}/${asset.name}`;
   const downloads=requests.filter(value=>value===url).length;
   assert.equal(downloads,expectedDownloads,'official selected package downloads in this attempt');
   assert.ok(path.isAbsolute(archive));

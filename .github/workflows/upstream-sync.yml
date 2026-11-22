@@ -1,0 +1,203 @@
+name: Sync upstream release and build fork
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: Optional upstream release tag to sync (defaults to latest non-draft release)
+        type: string
+        default: ''
+      force_build:
+        description: Build and republish current fork version even if upstream tag is already merged
+        type: boolean
+        default: false
+permissions:
+  contents: write
+  issues: write
+  actions: write
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.sync.outputs.should_build }}
+      head_sha: ${{ steps.sync.outputs.head_sha }}
+      release_notes: ${{ steps.sync.outputs.release_notes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Check upstream releases and attempt merge
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.upstream_tag }}
+          FORCE_BUILD: ${{ inputs.force_build == true }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/try2love/codex-mobile-bridge.git
+          git fetch upstream --tags --prune
+
+          TARGET_TAG=$(python3 - <<'PY'
+          import json, os, urllib.request
+          token = os.environ.get('GH_TOKEN', '')
+          requested = os.environ.get('INPUT_TAG', '').strip()
+          headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'cmb-upstream-sync'}
+          if token:
+              headers['Authorization'] = f'Bearer {token}'
+          req = urllib.request.Request(
+              'https://api.github.com/repos/try2love/codex-mobile-bridge/releases?per_page=20',
+              headers=headers,
+          )
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              releases = json.loads(resp.read().decode('utf-8'))
+          non_draft = [r for r in releases if not r.get('draft') and r.get('tag_name')]
+          if requested:
+              match = next((r for r in non_draft if r['tag_name'] == requested), None)
+              if not match:
+                  raise SystemExit(f'Upstream release tag not found: {requested}')
+              print(match['tag_name'])
+          elif non_draft:
+              print(non_draft[0]['tag_name'])
+          else:
+              raise SystemExit('No non-draft upstream releases found.')
+          PY
+          )
+
+          echo "Latest upstream release tag: $TARGET_TAG"
+          UPSTREAM_COMMIT=$(git rev-parse --verify "refs/tags/${TARGET_TAG}^{commit}")
+
+          write_outputs() {
+            local build="$1"
+            local sha="$2"
+            local notes_file="$3"
+            {
+              echo "should_build=${build}"
+              echo "head_sha=${sha}"
+              echo "release_notes<<__CMB_NOTES_EOF__"
+              cat "$notes_file"
+              echo "__CMB_NOTES_EOF__"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          if git merge-base --is-ancestor "$UPSTREAM_COMMIT" HEAD; then
+            echo "Upstream tag $TARGET_TAG ($UPSTREAM_COMMIT) is already merged into main."
+            VERSION=$(node -p "require('./package.json').version")
+            HAS_FORK_RELEASE=$(VERSION="$VERSION" python3 - <<'PY'
+          import json, os, urllib.error, urllib.request
+          repo = os.environ['GITHUB_REPOSITORY']
+          tag = 'v' + os.environ['VERSION']
+          token = os.environ.get('GH_TOKEN', '')
+          headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'cmb-upstream-sync'}
+          if token:
+              headers['Authorization'] = f'Bearer {token}'
+          req = urllib.request.Request(f'https://api.github.com/repos/{repo}/releases/tags/{tag}', headers=headers)
+          try:
+              with urllib.request.urlopen(req, timeout=20) as resp:
+                  rel = json.loads(resp.read().decode('utf-8'))
+              has_manifest = any(a.get('name') == 'bridge-update.json' for a in rel.get('assets', []))
+              print('true' if has_manifest else 'false')
+          except urllib.error.HTTPError as err:
+              if err.code == 404:
+                  print('false')
+              else:
+                  raise
+          PY
+          )
+
+            if [ "$HAS_FORK_RELEASE" = "true" ] && [ "$FORCE_BUILD" != "true" ]; then
+              echo "Fork release v${VERSION} with signed bridge-update.json already exists; nothing to do."
+              printf 'Already synced at %s (v%s).\n' "$TARGET_TAG" "$VERSION" > /tmp/release-notes.txt
+              write_outputs "false" "$(git rev-parse HEAD)" /tmp/release-notes.txt
+              exit 0
+            fi
+
+            printf 'Synced with upstream %s.\nFork Windows build v%s.\n' "$TARGET_TAG" "$VERSION" > /tmp/release-notes.txt
+            write_outputs "true" "$(git rev-parse HEAD)" /tmp/release-notes.txt
+            exit 0
+          fi
+
+          cp desktop/features/updates/update-public-key.pem /tmp/fork-update-public-key.pem
+          set +e
+          git merge --no-ff --no-edit "$UPSTREAM_COMMIT" -m "chore: merge upstream ${TARGET_TAG}"
+          MERGE_RC=$?
+          set -e
+
+          if [ "$MERGE_RC" -ne 0 ]; then
+            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            if [ "$CONFLICTS" = "desktop/features/updates/update-public-key.pem" ]; then
+              echo "Resolving expected public-key conflict in favor of fork signing identity..."
+              cp /tmp/fork-update-public-key.pem desktop/features/updates/update-public-key.pem
+              git add desktop/features/updates/update-public-key.pem
+              git commit --no-edit
+            else
+              echo "Merge conflict detected when syncing upstream $TARGET_TAG:"
+              echo "$CONFLICTS"
+              git merge --abort || true
+              ISSUE_TITLE="Upstream sync conflict: ${TARGET_TAG}"
+              ISSUE_BODY=$(cat <<EOF
+          Automated merge of upstream release \`${TARGET_TAG}\` (${UPSTREAM_COMMIT}) into \`main\` failed due to git conflicts in:
+
+          \`\`\`
+          ${CONFLICTS}
+          \`\`\`
+
+          To resolve locally:
+          \`\`\`bash
+          git fetch upstream --tags
+          git checkout main
+          git merge ${TARGET_TAG}
+          # resolve conflicts, keep fork public key & updater REPO
+          git push origin main
+          \`\`\`
+          EOF
+              )
+              EXISTING=$(gh issue list --state open --search "\"${ISSUE_TITLE}\" in:title" --json number,title --jq "map(select(.title == \"${ISSUE_TITLE}\"))[0].number // empty")
+              if [ -n "$EXISTING" ]; then
+                gh issue comment "$EXISTING" --body "$ISSUE_BODY"
+              else
+                gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY"
+              fi
+              printf 'Merge conflict syncing %s.\n' "$TARGET_TAG" > /tmp/release-notes.txt
+              write_outputs "false" "$(git rev-parse HEAD)" /tmp/release-notes.txt
+              exit 0
+            fi
+          fi
+
+          # Always preserve fork signing public key & fork update endpoints across upstream merges.
+          if ! cmp -s /tmp/fork-update-public-key.pem desktop/features/updates/update-public-key.pem; then
+            cp /tmp/fork-update-public-key.pem desktop/features/updates/update-public-key.pem
+            git add desktop/features/updates/update-public-key.pem
+            git commit --amend --no-edit
+          fi
+
+          grep -q "v-hiker/codex-mobile-bridge" desktop/features/updates/updater.cjs
+          grep -q "v-hiker/codex-mobile-bridge" bridge/features/updates/mobile.py
+
+          git push origin HEAD:main
+          VERSION=$(node -p "require('./package.json').version")
+          NEW_SHA=$(git rev-parse HEAD)
+          cat > /tmp/release-notes.txt <<EOF
+          Automated sync of upstream [${TARGET_TAG}](https://github.com/try2love/codex-mobile-bridge/releases/tag/${TARGET_TAG}) (${NEW_SHA:0:8}) with fork Windows enhancements and modernized desktop UI.
+          EOF
+          write_outputs "true" "$NEW_SHA" /tmp/release-notes.txt
+
+  build-and-release:
+    needs: sync
+    if: ${{ needs.sync.outputs.should_build == 'true' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/windows-build.yml
+    with:
+      publish_release: true
+      checkout_ref: ${{ needs.sync.outputs.head_sha }}
+      release_notes: ${{ needs.sync.outputs.release_notes }}
+    secrets: inherit

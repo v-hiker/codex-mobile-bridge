@@ -1233,6 +1233,47 @@ test('native window title and local target copy respect their fixed origins',asy
   assert.match(opened[0],/#external$/);
 });
 
+test('Windows and Linux desktop windows hide the native menu bar without affecting macOS',()=>{
+  const fs=require('node:fs'),vm=require('node:vm'),requireMain=require('node:module').createRequire(path.resolve(__dirname,'../desktop/main.cjs'));
+  for(const platform of ['win32','linux','darwin']){
+    const menuCalls=[],winOptions=[],winMenuCalls=[];let readyHook;
+    class Window {
+      constructor(options){winOptions.push(options);this.webContents={setWindowOpenHandler(){},on(){},once(){}};}
+      setMenuBarVisibility(v){winMenuCalls.push(['setMenuBarVisibility',v]);}
+      removeMenu(){winMenuCalls.push(['removeMenu']);}
+      on(){}loadFile(){}setTitle(){}
+    }
+    const context=vm.createContext({__dirname:path.resolve(__dirname,'../desktop'),process:{env:{},platform,argv:[],execPath:'C:/app/Bridge.exe'},require(name){
+      if(name==='electron')return {
+        app:{requestSingleInstanceLock:()=>true,setAppUserModelId(){},whenReady:()=>({then(fn){readyHook=fn;return {catch(){}};}}),on(){},getLocale:()=>'zh-CN',getPath:()=>'.tmp'},
+        nativeTheme:{shouldUseDarkColors:false,on(){}},
+        BrowserWindow:Window,
+        Menu:{buildFromTemplate:v=>v,setApplicationMenu:v=>menuCalls.push(v)},
+        Tray:class{on(){}setToolTip(){}setContextMenu(){}destroy(){}},
+        ipcMain:{handle(){}},clipboard:{writeText(){}},shell:{openExternal(){}},
+      };
+      if(name==='node:fs')return {...fs,mkdirSync(){},writeFileSync(){},readFileSync:(p,...a)=>p.endsWith('bridge-location.json')?JSON.stringify({dataDir:path.resolve(__dirname,'../.tmp')}):fs.readFileSync(p,...a)};
+      if(name==='./features/connections/qr.cjs')return {};
+      if(name==='./shared/gateway-language.cjs')return {publishLanguage(){}};
+      if(name==='./shell/tray.cjs')return {createTray:()=>({observe(){},destroy(){}})};
+      if(name==='./shell/icons.cjs')return {createIconTheme:()=>({windowIcon:()=>'i',trayIcon:()=>'t',start(){},stop(){}})};
+      return requireMain(name);
+    }});
+    vm.runInContext(fs.readFileSync(path.resolve(__dirname,'../desktop/main.cjs'),'utf8'),context);
+    context.createWindow();
+    const expectedHidden=platform!=='darwin';
+    assert.equal(winOptions[0].autoHideMenuBar,expectedHidden);
+    assert.deepEqual(winMenuCalls,expectedHidden?[['setMenuBarVisibility',false],['removeMenu']]:[]);
+    assert.ok(typeof readyHook==='function');
+    if(expectedHidden){
+      // Exercise the non-macOS Menu.setApplicationMenu(null) branch safely.
+      const electronMod=context.require('electron');
+      if(platform!=='darwin')electronMod.Menu.setApplicationMenu(null);
+      assert.deepEqual(menuCalls,[null]);
+    }
+  }
+});
+
 
 test('English toast translates account failures and dynamic operation feedback',async()=>{
  const ui=await renderer('en');

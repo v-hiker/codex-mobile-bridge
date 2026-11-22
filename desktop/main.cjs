@@ -428,10 +428,10 @@ function register(){
   });
   ipcMain.handle('bridge:open',async(event,target)=>{
     authorize(event);
-    if(target==='releases')return shell.openExternal('https://github.com/try2love/codex-mobile-bridge/releases');
-    if(target==='project-home')return shell.openExternal('https://github.com/try2love/codex-mobile-bridge');
-    if(target==='project-issues')return shell.openExternal('https://github.com/try2love/codex-mobile-bridge/issues');
-    if(target==='project-pulls')return shell.openExternal('https://github.com/try2love/codex-mobile-bridge/pulls');
+    if(target==='releases')return shell.openExternal('https://github.com/v-hiker/codex-mobile-bridge/releases');
+    if(target==='project-home')return shell.openExternal('https://github.com/v-hiker/codex-mobile-bridge');
+    if(target==='project-issues')return shell.openExternal('https://github.com/v-hiker/codex-mobile-bridge/issues');
+    if(target==='project-pulls')return shell.openExternal('https://github.com/v-hiker/codex-mobile-bridge/pulls');
     if(target==='credentials')return shell.openPath(path.join(dataDir,'首次登录.txt'));
     if(target==='data')return shell.openPath(dataDir);
     if(target==='tailscale-help'||target==='setup-tailscale')return shell.openExternal('https://tailscale.com/docs/how-to/quickstart');
@@ -474,7 +474,8 @@ async function acknowledgeUpdate(){
   }catch{} // Missing acknowledgement makes the independent helper restore the old app.
 }
 function createWindow(hidden=false){
-  window=new BrowserWindow({show:!hidden,width:1100,height:850,minWidth:820,minHeight:640,title:t('Codex 手机网关'),icon:iconTheme.windowIcon(),backgroundColor:'#f6f7f9',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
+  window=new BrowserWindow({show:!hidden,width:1120,height:860,minWidth:860,minHeight:640,autoHideMenuBar:process.platform!=='darwin',title:t('Codex 手机网关'),icon:iconTheme.windowIcon(),backgroundColor:'#f4f6fa',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
+  if(process.platform!=='darwin'){window.setMenuBarVisibility?.(false);window.removeMenu?.();}
   // The native title is owned by the main process, including locale changes.
   window.on('page-title-updated',event=>event.preventDefault());
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
@@ -498,6 +499,7 @@ else{
       try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
       dataDir=loadDataDir();publishLanguage(dataDir,language);
       setupUpdater();register();
+      if(process.platform!=='darwin')Menu?.setApplicationMenu?.(null);
       if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');
       if(['win32','darwin'].includes(process.platform)){
         tray=createTray({Tray,Menu,icon:iconTheme.trayIcon(),show:showWindow,worker,t,

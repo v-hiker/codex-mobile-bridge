@@ -236,7 +236,7 @@ test('Linux verified DEB handoff backs up first and never exits or claims comple
 test('legacy Linux manual release requires confirmation and a successful backup before opening the official page',async()=>{
   let response=0,finishBackup;
   const f=controller({platform:'linux',confirm:async()=>({response})}),candidate={manualRelease:true,version:'2.2.1',
-    releasePage:'https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1',
+    releasePage:'https://github.com/v-hiker/codex-mobile-bridge/releases/tag/v2.2.1',
     transition:{intent:'return-stable',from:'2.2.2-preview.2',to:'2.2.1',dataFormat:'bridge-data-v1'}};
   const value={candidateId:'checked',current:candidate.transition.from,version:candidate.version,intent:'return-stable',manualRelease:true,requiresConfirmation:true};
   f.register({status:()=>value,install:async options=>{assert.equal(options.candidateId,'checked');assert.equal(options.confirmed,true);return f.context.installUpdate(candidate);}});
@@ -249,7 +249,7 @@ test('legacy Linux manual release requires confirmation and a successful backup 
   assert.deepEqual(f.calls.opened,[candidate.releasePage]);assert.deepEqual(f.calls.exit,[]);assert.equal(f.calls.closed,0);
 });
 test('Linux manual release backup failure blocks the official page and any system installer',async()=>{
-  const f=controller({platform:'linux',confirm:async()=>({response:1})}),candidate={manualRelease:true,version:'2.2.1',releasePage:'https://github.com/try2love/codex-mobile-bridge/releases/tag/v2.2.1',transition:{intent:'return-stable'}};
+  const f=controller({platform:'linux',confirm:async()=>({response:1})}),candidate={manualRelease:true,version:'2.2.1',releasePage:'https://github.com/v-hiker/codex-mobile-bridge/releases/tag/v2.2.1',transition:{intent:'return-stable'}};
   f.register({status:()=>({candidateId:'checked',current:'2.2.2-preview.2',version:'2.2.1',intent:'return-stable',manualRelease:true,requiresConfirmation:true}),install:()=>f.context.installUpdate(candidate)});
   vm.runInContext("worker=async()=>{throw Error('backup failed');}",f.context);
   await assert.rejects(f.invoke('bridge:install-update',{candidateId:'checked'}),/backup failed/);
