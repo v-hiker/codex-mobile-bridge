@@ -301,7 +301,7 @@ async function channelFixture(t,{current='2.2.1',versions=['2.2.2-preview.2','2.
     if(url===RELEASES)return new Response(JSON.stringify(versions.map(v=>({tag_name:'v'+v,prerelease:v.includes('-'),assets:[{name:'bridge-update.json'}]}))));
     if(!url.endsWith('.json'))return new Response(bytes);
     await fetchRelease?.(url);
-    const v=/\/v([^/]+)\//.exec(url)[1],data=info();data.version=v;data.assets['darwin-arm64'].name=assetName(v,platform,arch);
+    const v=/\/download\/v([^/]+)\//.exec(url)[1],data=info();data.version=v;data.assets['darwin-arm64'].name=assetName(v,platform,arch);
     return new Response(signed({...data,...metadata}));
   }});
   return f;
@@ -412,7 +412,7 @@ async function historyFixture(t,{current='2.2.2',platform='darwin',arch='arm64',
     }
     if(url===RELEASES)return new Response(JSON.stringify(rows));
     if(url.endsWith('bridge-update.json')){
-      const target=/\/v([^/]+)\//.exec(url)[1];await manifestWait?.(target);
+      const target=/\/download\/v([^/]+)\//.exec(url)[1];await manifestWait?.(target);
       const assets={};
       for(const format of platform==='linux'?['deb','AppImage']:['zip'])assets[`${platform}-${arch}${platform==='linux'?'-'+format:''}`]={
         name:assetName(target,platform,arch,format),size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};
