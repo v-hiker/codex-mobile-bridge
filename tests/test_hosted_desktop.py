@@ -1,10 +1,12 @@
 """Desktop host compatibility without starting a second native executor."""
 import json
 import copy
+import os
 import socket
 import tempfile
 import threading
 import unittest
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
@@ -430,6 +432,202 @@ class HostedSessionTests(unittest.TestCase):
         failure = IPCError('generation changed'); failure.not_sent = True
         with patch.object(client.client, 'request', side_effect=failure):
             with self.assertRaises(AppServerRequestNotSent): client.request('thread/fork', {'threadId': 't'})
+
+
+class HostedStaleAndNavigationTests(unittest.TestCase):
+    def setUp(self):
+        root = Path(__file__).resolve().parents[1]
+        (root / '.tmp').mkdir(exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(dir=root / '.tmp')
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name).resolve()
+        self.records = runtime.private_directory(runtime.directory(self.home))
+        self.app = str(self.home / 'Codex.exe')
+        self.cli = str(self.home / 'codex.exe')
+        Path(self.app).write_bytes(b'MZ')
+        Path(self.cli).write_bytes(b'MZ')
+        self.settings_data = {
+            'version': 1,
+            'home': str(self.home),
+            'application': self.app.lower(),
+            'cli': self.cli,
+        }
+        runtime._write(self.records / 'settings.json', json.dumps(self.settings_data))
+
+    def _hosted_record(self, **overrides):
+        generation = str(uuid.uuid4())
+        socket_name = (r'\\.\pipe\cmb-codex-desktop-' + generation if os.name == 'nt'
+                       else str(runtime.socket_path(self.home, generation)))
+        record = {
+            'version': 1,
+            'ready': True,
+            'transport': 'desktop-stdio',
+            'home': str(self.home),
+            'cli': str(self.home / 'old-codex.exe'),
+            'app': {'pid': 101, 'created': 1000, 'session': 1, 'parent': 1, 'image': str(self.home / 'old-Codex.exe')},
+            'host': {'pid': 102, 'created': 1001, 'session': 1, 'parent': 101, 'image': str(self.home / 'old-Codex.exe')},
+            'adapter': {'pid': 103, 'created': 1002, 'session': 1, 'parent': 102, 'image': str(self.home / 'gateway.exe')},
+            'runtime': {'pid': 104, 'created': 1003, 'session': 1, 'parent': 103, 'image': str(self.home / 'old-codex.exe')},
+            'generation': generation,
+            'socket': socket_name,
+            'controlToken': 'a' * 64,
+        }
+        record.update(overrides)
+        return record
+
+    def test_stale_exited_active_record_returns_none_and_does_not_block_stopped_audit(self):
+        runtime._write(self.records / 'active.json', json.dumps(self._hosted_record()))
+        with patch.object(runtime, 'runtime_alive', return_value=False):
+            self.assertIsNone(runtime.hosted_endpoint(self.home))
+            ipc = DesktopIPC(r'\\.\pipe\codex-ipc' if os.name == 'nt' else '/legacy.sock', codex_home=self.home)
+            with patch('bridge.clients.codex.ipc.connect_stream', side_effect=FileNotFoundError('missing')) as connect:
+                with self.assertRaises(IPCError) as raised:
+                    ipc.connect()
+                connect.assert_called_once()
+                self.assertEqual(connect.call_args.args[0], ipc.original_path)
+                self.assertIsInstance(raised.exception.__cause__, FileNotFoundError)
+
+    def test_live_or_unready_hosted_record_still_rejects_mismatches(self):
+        runtime._write(self.records / 'active.json', json.dumps(self._hosted_record(ready=False)))
+        with patch.object(runtime, 'runtime_alive', return_value=False):
+            with self.assertRaisesRegex(ValueError, '尚未就绪'):
+                runtime.hosted_endpoint(self.home)
+
+        runtime._write(self.records / 'active.json', json.dumps(self._hosted_record(home=str(self.home / 'other'))))
+        with patch.object(runtime, 'runtime_alive', return_value=False):
+            with self.assertRaisesRegex(ValueError, '归属已变化'):
+                runtime.hosted_endpoint(self.home)
+
+        runtime._write(self.records / 'active.json', json.dumps(self._hosted_record()))
+        with patch.object(runtime, 'runtime_alive', side_effect=lambda ident: ident['pid'] == 104):
+            with self.assertRaisesRegex(ValueError, '归属已变化'):
+                runtime.hosted_endpoint(self.home)
+
+        malformed = self._hosted_record()
+        malformed.pop('runtime')
+        runtime._write(self.records / 'active.json', json.dumps(malformed))
+        with patch.object(runtime, 'runtime_alive', return_value=False):
+            with self.assertRaisesRegex(ValueError, '归属已变化'):
+                runtime.hosted_endpoint(self.home)
+
+    def test_open_in_desktop_launches_wrapped_app_first_when_codex_is_stopped(self):
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+        from bridge.app.service import Bridge, LiveSession
+        from bridge.features.sessions.create import CreationError
+
+        fake_bridge = SimpleNamespace(local=True, host='local', codex_home=self.home, closed=threading.Event())
+        order = []
+        app_instance = Mock()
+        app_instance.executable = Path(self.app)
+        app_instance.processes.side_effect = [[], [], [444]]
+        app_instance.start.side_effect = lambda: order.append('start')
+        endpoint = {'path': r'\\.\pipe\cmb-codex-desktop-test', 'generation': 'g', 'controlToken': 'a' * 64}
+
+        with patch('bridge.app.service.sys.platform', 'win32'), \
+             patch('bridge.app.service.DesktopApp', return_value=app_instance), \
+             patch.object(runtime, 'settings', return_value=self.settings_data), \
+             patch.object(runtime, 'initialization_lock', return_value=nullcontext()), \
+             patch.object(runtime, 'hosted_endpoint', return_value=endpoint):
+            Bridge._ensure_desktop_app_for_navigation(fake_bridge)
+        self.assertEqual(order, ['start'])
+
+        # Verify Bridge.activate executes start before open_in_desktop when stopped.
+        tid = str(uuid.uuid4())
+        fake_session = LiveSession(tid)
+        fake_session.origin = fake_session.runtime = 'desktop'
+        attach_calls = [0]
+
+        def fake_attach(session, timeout=1.5):
+            attach_calls[0] += 1
+            if attach_calls[0] >= 2:
+                session.connected = True
+
+        full_bridge = SimpleNamespace(
+            local=True,
+            host='local',
+            codex_home=self.home,
+            closed=threading.Event(),
+            accounts=SimpleNamespace(gate=nullcontext(), check_ready=lambda: None),
+            _cli_recovery_record=lambda: {},
+            session=lambda thread_id, background=True: fake_session,
+            released_cli=SimpleNamespace(set=lambda *a: None),
+            ipc=SimpleNamespace(endpoint_changed=lambda: False, hosted=True),
+            _attach=fake_attach,
+        )
+        full_bridge._ensure_desktop_app_for_navigation = lambda: Bridge._ensure_desktop_app_for_navigation(full_bridge)
+        activate_order = []
+        app_instance.processes.side_effect = [[], [], [444]]
+        app_instance.start.side_effect = lambda: activate_order.append('start')
+        with patch('bridge.app.service.sys.platform', 'win32'), \
+             patch('bridge.app.service.DesktopApp', return_value=app_instance), \
+             patch('bridge.app.service.open_in_desktop', side_effect=lambda *a: activate_order.append('open')) as open_uri, \
+             patch.object(runtime, 'settings', return_value=self.settings_data), \
+             patch.object(runtime, 'initialization_lock', return_value=nullcontext()), \
+             patch.object(runtime, 'hosted_endpoint', return_value=endpoint):
+            result = Bridge.activate(full_bridge, tid)
+        self.assertIs(result, fake_session)
+        self.assertEqual(activate_order, ['start', 'open'])
+        open_uri.assert_called_once_with(tid, 'local')
+
+        # When already running, DesktopApp.start() is skipped.
+        app_instance.start.reset_mock()
+        app_instance.processes.side_effect = [[444]]
+        with patch('bridge.app.service.sys.platform', 'win32'), \
+             patch('bridge.app.service.DesktopApp', return_value=app_instance), \
+             patch.object(runtime, 'settings', return_value=self.settings_data):
+            Bridge._ensure_desktop_app_for_navigation(fake_bridge)
+        app_instance.start.assert_not_called()
+
+        # On DesktopRuntimeOutdated, abort before bare URI activation.
+        app_instance.processes.side_effect = [[], []]
+        app_instance.start.side_effect = runtime.DesktopRuntimeOutdated('网关程序已变化，请重新初始化 Codex 原生连接')
+        with patch('bridge.app.service.sys.platform', 'win32'), \
+             patch('bridge.app.service.DesktopApp', return_value=app_instance), \
+             patch.object(runtime, 'settings', return_value=self.settings_data), \
+             patch.object(runtime, 'initialization_lock', return_value=nullcontext()):
+            with self.assertRaisesRegex(CreationError, '网关程序已变化'):
+                Bridge._ensure_desktop_app_for_navigation(fake_bridge)
+
+        # In Bridge.activate(), CreationError aborts before open_in_desktop and surfaces an IPCError.
+        fake_session2 = LiveSession(tid)
+        fake_session2.origin = fake_session2.runtime = 'desktop'
+        full_bridge.session = lambda thread_id, background=True: fake_session2
+        full_bridge._attach = lambda s, timeout=1.5: None
+        app_instance.processes.side_effect = [[], []]
+        with patch('bridge.app.service.sys.platform', 'win32'), \
+             patch('bridge.app.service.DesktopApp', return_value=app_instance), \
+             patch('bridge.app.service.open_in_desktop') as open_uri, \
+             patch.object(runtime, 'settings', return_value=self.settings_data), \
+             patch.object(runtime, 'initialization_lock', return_value=nullcontext()):
+            with self.assertRaisesRegex(IPCError, '网关程序已变化'):
+                Bridge.activate(full_bridge, tid)
+        open_uri.assert_not_called()
+
+    def test_unwrapped_desktop_preparation_recommends_restart_until_hosted_connects(self):
+        from types import SimpleNamespace
+        from bridge.app.service import Bridge
+
+        stub = SimpleNamespace(
+            lock=threading.RLock(),
+            live={},
+            host='local',
+            accounts=SimpleNamespace(desktop_preparation={'state': 'waiting', 'taskStateUnavailable': True}),
+            ipc=SimpleNamespace(hosted=False, socket=None),
+        )
+        self.assertTrue(Bridge.desktop_restart_recommended(stub))
+
+        stub.ipc.hosted = True
+        stub.ipc.socket = object()
+        self.assertFalse(Bridge.desktop_restart_recommended(stub))
+
+        stub.ipc.socket = None
+        stub.accounts.desktop_preparation = {'state': 'ready'}
+        self.assertFalse(Bridge.desktop_restart_recommended(stub))
+
+        stub.accounts.desktop_preparation = {'state': 'waiting', 'taskStateUnavailable': True}
+        stub.host = 'remote:box'
+        self.assertFalse(Bridge.desktop_restart_recommended(stub))
 
 
 if __name__ == '__main__':

@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from bridge.features.notifications.channels import write_json
+from bridge.platforms.windows.job import bind_kill_on_close, close_job
 
 
 def command(target, remote_port, local_port):
@@ -28,6 +29,7 @@ class SSHTunnel:
         self.suffix = "-"+connection_id if connection_id else ""
         self.stopped = threading.Event()
         self.process = None
+        self._job = None
         self.thread = None
 
     def status(self, state, message):
@@ -42,10 +44,12 @@ class SSHTunnel:
         try:
             while not self.stopped.is_set():
                 self.status('connecting', '正在连接自有服务器…')
+                job = None
                 try:
                     kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {'start_new_session': True}
                     self.process = subprocess.Popen(self.args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                                     stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', **kwargs)
+                    job = self._job = bind_kill_on_close(self.process)
                     # close() may have raced with Popen; never leave a child behind.
                     if self.stopped.is_set():
                         self._terminate()
@@ -59,6 +63,10 @@ class SSHTunnel:
                     self.process.wait()
                 except OSError:
                     pass
+                finally:
+                    self._terminate()
+                    close_job(job)
+                    self._job = None
                 if self.stopped.is_set():
                     break
                 self.status('retrying', 'SSH 连接中断，正在自动重试；详情见 ssh-tunnel.log')

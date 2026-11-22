@@ -416,6 +416,26 @@ def connect(home, cli):
         raise AppServerUnavailable('Codex 原生共享连接尚未就绪，可在账号管理中查看自动准备状态；不会另起运行时重试写入') from exc
 
 
+def _record_all_inactive(record):
+    """Return True only when every recorded process generation is proven exited."""
+    for key in ('app', 'adapter', 'runtime'):
+        entry = record.get(key)
+        if not isinstance(entry, dict) or not isinstance(entry.get('pid'), int) or isinstance(entry.get('pid'), bool):
+            return False
+    if 'host' in record:
+        host = record['host']
+        if not isinstance(host, dict) or not isinstance(host.get('pid'), int) or isinstance(host.get('pid'), bool):
+            return False
+    for kind in ('app', 'host', 'adapter', 'runtime'):
+        if kind in record:
+            try:
+                if runtime_alive(record[kind]):
+                    return False
+            except (OSError, ValueError, KeyError, TypeError):
+                return False
+    return True
+
+
 def hosted_endpoint(home):
     """An authenticated, live hosted record selects the new control transport."""
     value = settings(home) if sys.platform in ('darwin', 'win32') else None
@@ -428,8 +448,11 @@ def hosted_endpoint(home):
     if record.get('transport') != 'desktop-stdio':
         return None
     if (record.get('version') != VERSION or record.get('ready') is not True or
-            record.get('home') != value['home'] or record.get('cli') != value['cli'] or
-            record['app']['image'] != value['application']):
+            record.get('home') != value['home']):
+        raise ValueError('原生桌面接入记录尚未就绪或归属已变化')
+    if _record_all_inactive(record):
+        return None
+    if record.get('cli') != value['cli'] or record['app']['image'] != value['application']:
         raise ValueError('原生桌面接入记录尚未就绪或归属已变化')
     verify_record(record)
     expected = (r'\\.\pipe\cmb-codex-desktop-' + record['generation'] if sys.platform == 'win32'

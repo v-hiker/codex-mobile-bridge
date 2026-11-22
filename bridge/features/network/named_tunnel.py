@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 from bridge.features.notifications.channels import write_json
+from bridge.platforms.windows.job import bind_kill_on_close, close_job
 
 
 LOG = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ class NamedTunnel:
         self.executable, self.entry, self.data_dir, self.token = str(executable), entry, Path(data_dir), token
         self.stopped = threading.Event()
         self.process = None
+        self._job = None
         self.thread = None
         self.last_status = None
 
@@ -53,6 +55,7 @@ class NamedTunnel:
         delay = 2
         while not self.stopped.is_set():
             self.status('connecting', '正在连接 Cloudflare 固定隧道…')
+            job = None
             try:
                 # Ignore ambient cloudflared config and credentials. Token is not a command argument.
                 config = self.data_dir/('cloudflare-'+self.entry['id']+'.yml')
@@ -64,6 +67,7 @@ class NamedTunnel:
                 self.process = subprocess.Popen([self.executable, 'tunnel', '--config', str(config), '--no-autoupdate',
                     '--protocol', 'http2', '--metrics', '127.0.0.1:0', 'run'], stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', env=environment, **flags)
+                job = self._job = bind_kill_on_close(self.process)
                 if self.stopped.is_set():
                     self.process.terminate()
                 for line in self.process.stdout:
@@ -87,6 +91,8 @@ class NamedTunnel:
             finally:
                 if self.process and self.process.stdout:
                     self.process.stdout.close()
+                close_job(job)
+                self._job = None
             if self.stopped.is_set():
                 break
             self.status('retrying', '固定隧道已断开，正在自动重连。')

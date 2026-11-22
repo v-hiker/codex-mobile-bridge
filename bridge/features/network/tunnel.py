@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 
 from bridge.features.notifications.channels import write_json
+from bridge.platforms.windows.job import bind_kill_on_close, close_job
 
 
 class QuickTunnel:
@@ -27,6 +28,7 @@ class QuickTunnel:
         self.data_dir = Path(data_dir)
         self.on_origin = on_origin
         self.process = None
+        self._job = None
         self.url = None
         self.ready = threading.Event()
         self.finished = threading.Event()
@@ -171,6 +173,7 @@ class QuickTunnel:
         args = [str(self.executable), 'tunnel', '--config', str(config), '--no-autoupdate',
                 '--url', 'http://127.0.0.1:' + str(self.port), '--protocol', 'http2',
                 '--metrics', '127.0.0.1:0', '--grace-period', '2s']
+        flags = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {'start_new_session': True}
         with self.lifecycle_lock:
             if self.closed.is_set():
                 return False
@@ -180,8 +183,9 @@ class QuickTunnel:
             self.finished.clear()
             self.broken.clear()
             process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                       stderr=subprocess.STDOUT, text=True, encoding='utf-8', start_new_session=True)
+                                       stderr=subprocess.STDOUT, text=True, encoding='utf-8', **flags)
             self.process = process
+            self._job = bind_kill_on_close(process)
             self.reader = threading.Thread(target=self._read, args=(process,), daemon=True)
             self.reader.start()
         while not self.closed.is_set():
@@ -226,19 +230,24 @@ class QuickTunnel:
     def _retire(self):
         with self.lifecycle_lock:
             process = self.process
+            job = self._job
             reader = self.reader
             self.process = None
+            self._job = None
             self.reader = None
             self.metrics_port = None
             self._network_epoch += 1
             self._network_due = None
-        if process and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+        try:
+            if process and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+        finally:
+            close_job(job)
         if reader and reader is not threading.current_thread():
             reader.join(timeout=2)
 

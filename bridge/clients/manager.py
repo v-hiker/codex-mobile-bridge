@@ -3489,6 +3489,8 @@ class DesktopSessions:
                         result = launch_client(descriptor, allow_unprepared_codex=True)
                     if not result.get('running'):
                         raise ValueError('客户端尚未启动，请在电脑端检查后重试')
+                    if accounts is not None and isinstance(getattr(accounts, 'desktop_preparation', None), dict):
+                        accounts.desktop_preparation = {'state': 'idle'}
                 elif provider == 'codex' and not descriptor['installed'] and row.get('cliAvailable'):
                     pass  # CLI-only access starts its runtime on an explicit chat operation.
                 elif (startup and provider == 'codex' and accounts and sys.platform in ('darwin', 'win32')

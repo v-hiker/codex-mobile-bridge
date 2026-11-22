@@ -889,6 +889,39 @@ class Bridge:
         return next((row for row in self.hosts.projects() if row['host'] == 'local' and
                      os.path.normcase(os.path.realpath(row['cwd'])) == canonical), None)
 
+    def _ensure_desktop_app_for_navigation(self):
+        """Launch Codex via DesktopApp before URI activation so CODEX_CLI_PATH is injected."""
+        if sys.platform not in ('win32', 'darwin') or not self.local or self.host.startswith('codex:'):
+            return
+        from bridge.clients.codex import desktop_runtime
+        try:
+            config = desktop_runtime.settings(self.codex_home)
+        except (OSError, ValueError) as exc:
+            raise CreationError(str(exc)) from exc
+        if config is None:
+            return
+        app = DesktopApp(config['application'], self.codex_home)
+        if not app.executable.is_file() or app.processes():
+            return
+        try:
+            with desktop_runtime.initialization_lock(self.codex_home):
+                if not app.processes():
+                    app.start()
+        except desktop_runtime.DesktopRuntimeBusy:
+            pass
+        except (desktop_runtime.DesktopRuntimeOutdated, ValueError, OSError) as exc:
+            raise CreationError(str(exc)) from exc
+        deadline = time.monotonic() + 20.0
+        while not self.closed.is_set() and time.monotonic() < deadline:
+            try:
+                if desktop_runtime.hosted_endpoint(self.codex_home) is not None:
+                    return
+            except (OSError, ValueError):
+                pass
+            self.closed.wait(.25)
+        if not app.processes():
+            raise CreationError('Codex 桌面尚未启动完成，请在电脑端检查后重试')
+
     def _confirm_desktop_project(self, project, entry):
         host = project['host']
         cwd = project['cwd']
@@ -912,6 +945,7 @@ class Bridge:
             self._save_creations()
             try:
                 if config is None:
+                    self._ensure_desktop_app_for_navigation()
                     open_project_in_desktop(cwd)
                 else:
                     self.hosts.write_project_import(config, private_json)
@@ -1115,6 +1149,7 @@ class Bridge:
                 return {'id': entry['id'], 'host': entry['host'], 'opened': False,
                         'message': 'CLI 聊天已创建，可在此继续'}
             try:
+                self._ensure_desktop_app_for_navigation()
                 open_in_desktop(entry['id'], entry['host'])
                 opened = True
             except (OSError, CreationError, subprocess.SubprocessError):
@@ -3814,8 +3849,17 @@ class Bridge:
 
     def desktop_restart_recommended(self):
         with self.lock:
-            return any(session.desktop_restart_recommended and not session.connected
-                       for session in self.live.values())
+            if any(session.desktop_restart_recommended and not session.connected
+                   for session in self.live.values()):
+                return True
+        preparation = getattr(self.accounts, 'desktop_preparation', None) if self.accounts is not None else None
+        return bool(
+            self.host == 'local'
+            and isinstance(preparation, dict)
+            and preparation.get('state') == 'waiting'
+            and preparation.get('taskStateUnavailable') is True
+            and not (self.ipc.hosted and self.ipc.socket)
+        )
 
     def reconnect_session(self, thread_id, *, rebuild=False):
         # Join duplicate phone reconnects before they queue behind the host gate.
@@ -4046,8 +4090,11 @@ class Bridge:
                     raise IPCError(session.error or '桌面仍在加载此聊天；操作未发送，请稍后重试。')
                 session.last_activation = time.monotonic()
                 try:
+                    self._ensure_desktop_app_for_navigation()
                     open_in_desktop(session.id, self.host)
                 except (OSError, CreationError, subprocess.SubprocessError) as exc:
+                    if isinstance(exc, CreationError) and str(exc):
+                        raise IPCError(str(exc)) from exc
                     raise IPCError('无法在电脑 Codex 中加载此聊天；操作未发送，请检查 Codex 是否已安装并运行。') from exc
                 deadline = time.monotonic() + 20
                 while not session.connected and not self.closed.is_set() and time.monotonic() < deadline:
@@ -4063,6 +4110,9 @@ class Bridge:
                     if session.desktop_stream_error:
                         session.error = session.desktop_stream_error
                         session.desktop_restart_recommended = False
+                    elif isinstance(exc.__cause__, CreationError) and str(exc):
+                        session.desktop_restart_recommended = bool(session.rebuild_recommended)
+                        session.error = str(exc)
                     elif session.rebuild_recommended and _transport_rebuilt:
                         session.desktop_restart_recommended = True
                         session.error = '已重建网关连接，但原桌面会话仍未恢复。可在应用管理中核对任务后重启 Codex；操作未发送。'

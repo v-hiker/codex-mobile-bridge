@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from bridge.features.notifications.channels import write_json
+from bridge.platforms.windows.job import bind_kill_on_close, close_job
 
 
 def executable():
@@ -186,7 +187,7 @@ class TailscaleTunnel:
         self.ready = threading.Event()
         self.connected = threading.Event()
         self.lock = threading.Lock()
-        self.process = self.thread = self.reader = None
+        self.process = self.thread = self.reader = self._job = None
         self.last_status = None
 
     def status(self, state, message, auth_url=''):
@@ -289,6 +290,7 @@ class TailscaleTunnel:
         while not self.stopped.is_set():
             self.status('connecting', '正在建立 Tailscale 固定入口…')
             process = None
+            job = None
             reader = None
             result = 'retry'
             self.ready.clear()
@@ -318,6 +320,7 @@ class TailscaleTunnel:
                              'http://127.0.0.1:' + str(self.port)], stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                             encoding='utf-8', errors='replace', **flags)
+                        job = self._job = bind_kill_on_close(process)
                     reader = self.reader = threading.Thread(
                         target=self._read, args=(process,), name='tailscale-entry-output', daemon=True)
                     reader.start()
@@ -332,9 +335,11 @@ class TailscaleTunnel:
                         reader.join(timeout=3)
                     if process.stdout:
                         process.stdout.close()
+                close_job(job)
                 with self.lock:
                     self.process = None
                     self.reader = None
+                    self._job = None
                 self.ready.clear()
             if result == 'blocked':
                 return
