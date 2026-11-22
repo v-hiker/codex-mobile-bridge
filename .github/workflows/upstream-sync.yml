@@ -173,9 +173,33 @@ jobs:
           fi
 
           # Always preserve fork signing public key & fork update endpoints across upstream merges.
+          UPDATED_FORK_FILES=0
           if ! cmp -s /tmp/fork-update-public-key.pem desktop/features/updates/update-public-key.pem; then
             cp /tmp/fork-update-public-key.pem desktop/features/updates/update-public-key.pem
             git add desktop/features/updates/update-public-key.pem
+            UPDATED_FORK_FILES=1
+          fi
+          SYNCED_EMBED=$(python3 - <<'PY'
+          import pathlib, re
+          pem = pathlib.Path('desktop/features/updates/update-public-key.pem').read_text(encoding='utf-8').replace('\r\n', '\n')
+          path = pathlib.Path('bridge/platforms/macos/release_identity.py')
+          text = path.read_text(encoding='utf-8')
+          literal = "b'" + pem.replace('\n', r'\n') + "'"
+          updated, count = re.subn(r"^PUBLIC_KEY\s*=.*$", f"PUBLIC_KEY = {literal}", text, flags=re.M)
+          if count != 1:
+              raise SystemExit('Could not update PUBLIC_KEY in release_identity.py')
+          if updated != text:
+              path.write_text(updated, encoding='utf-8', newline='\n')
+              print('changed')
+          else:
+              print('same')
+          PY
+          )
+          if [ "$SYNCED_EMBED" = "changed" ]; then
+            git add bridge/platforms/macos/release_identity.py
+            UPDATED_FORK_FILES=1
+          fi
+          if [ "$UPDATED_FORK_FILES" = "1" ]; then
             git commit --amend --no-edit
           fi
 

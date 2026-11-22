@@ -12,7 +12,7 @@ BROKER = Path('Contents/Resources/gateway/codex-mobile-gateway')
 STARTER = Path('Contents/Helpers/CMBZCodePipeStarter.app/Contents/MacOS/CMBZCodePipeStarter')
 MANIFEST = Path('Contents/Resources/zcode-pipe-identity.json')
 # Embedded in the frozen executable: peer checks must not trust a replaceable key file.
-PUBLIC_KEY = b'-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEArRSY0ge22lRD1mk7Hopkq5aGCOVXQdN4I1xcOQpR1Bs=\n-----END PUBLIC KEY-----\n'
+PUBLIC_KEY = b'-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAXE+XWtXlV/AMAAxv2vuTrwvvpbzUcVIu40C3N96G6jQ=\n-----END PUBLIC KEY-----\n'
 
 
 def public_key_bytes():
