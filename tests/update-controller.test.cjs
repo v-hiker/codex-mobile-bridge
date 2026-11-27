@@ -342,3 +342,30 @@ test('Test packages browse releases and caches without automatic checks or insta
  f.register(u);await assert.rejects(f.invoke('bridge:install-update',{candidateId:'untrusted'}),/Test/);
  assert.equal(f.calls.dialogs.length,0);assert.equal(f.calls.workers.length,0);
 });
+
+test('Windows install-update blocker prompt lets user cancel without stopping instances',async()=>{
+  let installCalls=0;
+  const blocker={state:'error',message:'请先结束任务并正常退出 Codex，再更新网关。'};
+  const f=controller({platform:'win32',confirm:async()=>({response:0})});
+  f.register({status:()=>({candidateId:'checked',current:'2.2.2-preview.3',version:'2.2.2-preview.4'}),
+    install:async()=>{installCalls++;return blocker;}});
+  const result=await f.invoke('bridge:install-update',{candidateId:'checked'});
+  assert.deepEqual(result,blocker);
+  assert.equal(installCalls,1);
+  assert.equal(f.calls.dialogs.length,1);
+  assert.match(f.calls.dialogs[0].message,/自动停止并继续更新/);
+  assert.equal(f.calls.workers.length,0);
+});
+
+test('Windows install-update auto-stops blocking instances and retries install cleanly',async()=>{
+  let installCalls=0;
+  const blocker={state:'error',message:'请先结束任务并正常退出 Codex，再更新网关。'};
+  const f=controller({platform:'win32',confirm:async()=>({response:1})});
+  f.register({status:()=>({candidateId:'checked',current:'2.2.2-preview.3',version:'2.2.2-preview.4'}),
+    install:async()=>{installCalls++;return installCalls===1?blocker:{state:'restarting'};}});
+  const result=await f.invoke('bridge:install-update',{candidateId:'checked'});
+  assert.deepEqual(result,{state:'restarting'});
+  assert.equal(installCalls,2);
+  assert.equal(f.calls.dialogs.length,1);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.calls.workers)),[{action:'update-stop-blockers',payload:{target:path.dirname('/fixture/app/Bridge.exe'),force:true}}]);
+});

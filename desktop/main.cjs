@@ -209,6 +209,9 @@ function showWindow(){
   if(window.isMinimized())window.restore();
   window.show();window.focus();
 }
+function isWindowsBlockerError(result){
+  return process.platform==='win32'&&result?.state==='error'&&/请先结束任务并正常退出 (?:Codex|ZCode)，再更新网关/.test(String(result.message||''));
+}
 function register(){
   ipcMain.handle('bridge:appearance',(event,theme)=>{authorize(event);return appearance(theme);});
   ipcMain.handle('bridge:check-update',(event,payload)=>{authorize(event);return updater.check({manual:true,channel:payload?.channel});});
@@ -260,6 +263,27 @@ function register(){
     const value=updater.status(),candidateId=payload?.candidateId;
     if(!candidateId||value.candidateId!==candidateId)throw Error('请先检查更新。');
     updateStarting=true;
+    const runInstall=async installOptions=>{
+      const result=await updater.install(installOptions);
+      if(!isWindowsBlockerError(result))return result;
+      updateConfirmation=true;
+      const answer=await dialog.showMessageBox(window,{
+        type:'warning',
+        title:t('应用更新'),
+        message:t('检测到关联实例正在运行，是否自动停止并继续更新？'),
+        detail:`${t(result.message)}\n\n${t('点击“自动停止并继续更新”将先尝试正常退出占用网关的关联程序并释放文件锁，然后自动继续安装更新。请确认其中没有正在执行的任务。')}`,
+        buttons:[t('取消'),t('自动停止并继续更新')],
+        defaultId:0,
+        cancelId:0,
+        noLink:true,
+      });
+      updateConfirmation=false;
+      if(answer.response!==1)return result;
+      if(blocked())throw Error('请等待当前操作完成后再更新。');
+      await worker('update-stop-blockers',{target:updateTarget(),force:true});
+      if(blocked())throw Error('请等待当前操作完成后再更新。');
+      return await updater.install(installOptions);
+    };
     try{
       if(value.requiresConfirmation){
         updateConfirmation=true;
@@ -268,15 +292,16 @@ function register(){
           message:t(choosing?'确认切换到所选版本？':value.intent==='return-stable'?'确认返回稳定版？':'确认安装预览版？'),
           detail:`${value.current} → ${value.version}${value.assetName?'\n'+value.assetName:''}\n\n${t(choosing?(manual?'安装包校验后会备份网关配置，并交由系统安装器或你手动完成替换。旧版可能无法识别较新的配置功能；安装完成前，当前版本继续运行。':'切换版本会备份网关配置、替换当前应用并重启，继续使用现有资料。预览版可能存在未解决的问题。'):manual?(value.manualRelease?'此版本缺少签名的 Linux 更新包信息，将打开官方发布页供你手动下载。':'下载通过签名与摘要校验后，由系统安装器或你手动完成替换。安装完成前，当前版本继续运行。'):value.intent==='return-stable'?'返回稳定版会替换当前应用并重启。已保存的配置和登录会保留。':'预览版可能存在未解决的问题。安装会替换当前应用并重启。')}`,
           buttons:[t('取消'),t(choosing?(manual?'下载并打开安装包':'切换版本并重启'):manual?(value.manualRelease?'打开官方发布页':'下载所选版本'):value.intent==='return-stable'?'返回稳定版并重启':'安装预览版并重启')],defaultId:0,cancelId:0,noLink:true});
+        updateConfirmation=false;
         if(answer.response!==1)return updater.status();
         if(blocked())throw Error('请等待当前操作完成后再更新。');
         await startupCleanup;
         if(blocked())throw Error('请等待当前操作完成后再更新。');
-        return await updater.install({candidateId,confirmed:true});
+        return await runInstall({candidateId,confirmed:true});
       }
       await startupCleanup;
       if(blocked())throw Error('请等待当前操作完成后再更新。');
-      return await updater.install({candidateId});
+      return await runInstall({candidateId});
     }finally{updateConfirmation=false;updateStarting=false;}
   });
   ipcMain.handle('bridge:language',event=>{authorize(event);return language;});

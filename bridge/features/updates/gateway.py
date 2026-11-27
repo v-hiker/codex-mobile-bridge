@@ -489,6 +489,13 @@ def preflight(target):
     return {'ready': True}
 
 
+def stop_blockers(target, *, force=False):
+    if sys.platform == 'win32':
+        from bridge.platforms.windows.updates import stop_update_blockers
+        return stop_update_blockers(locations(Path(target))[1], force=bool(force))
+    return {'stopped': [], 'ready': True}
+
+
 def prepare(data_dir, payload):
     from bridge.app.desktop import Desktop
     target = Path(payload['target']).absolute()

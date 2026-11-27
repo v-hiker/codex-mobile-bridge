@@ -10,7 +10,7 @@ _DESKTOP_ACTIONS = (
     'logs', 'test-notification', 'webhook-endpoint', 'deployment', 'export-deployment',
     'check-entry', 'devices', 'pairing', 'account', 'accounts', 'cli-access', 'harness',
     'desktop-sessions', 'notification-watches', 'transfer-settings', 'network-adaptation',
-    'serve', 'update-preflight', 'update-prepare', 'update-backup', 'update-apply',
+    'serve', 'update-preflight', 'update-stop-blockers', 'update-prepare', 'update-backup', 'update-apply',
 )
 _DESKTOP_ENTRYPOINTS = frozenset((
     *_DESKTOP_ACTIONS,
@@ -132,6 +132,10 @@ def main():
         if args.action == 'update-preflight':
             from bridge.features.updates.gateway import preflight
             result = preflight(json.loads(sys.stdin.read(100000) or '{}')['target'])
+        elif args.action == 'update-stop-blockers':
+            from bridge.features.updates.gateway import stop_blockers
+            payload = json.loads(sys.stdin.read(100000) or '{}')
+            result = stop_blockers(payload['target'], force=bool(payload.get('force')))
         elif args.action == 'update-prepare':
             from bridge.features.updates.gateway import prepare
             result = prepare(args.data_dir, json.loads(sys.stdin.read(100000) or '{}'))

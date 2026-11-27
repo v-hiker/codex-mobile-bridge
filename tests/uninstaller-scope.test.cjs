@@ -19,3 +19,12 @@ test('optional uninstaller cleanup targets only the gateway user-data directory'
   assert.doesNotMatch(include,/\$APPDATA\\Codex(?:\\|"|\s)/i);
   assert.match(include,/Codex 和其他 Agent 的账号、会话及配置不会删除/);
 });
+
+test('installer and uninstaller define custom app-running check with auto-stop helper',()=>{
+  assert.match(include,/!macro customCheckAppRunning/);
+  assert.match(include,/nsis-stop-instances\.ps1/);
+  assert.match(include,/Call CmbCheckAndStopRunning/);
+  assert.match(include,/自动停止/);
+  const calls=[...include.matchAll(/Call CmbCheckAndStopRunning/g)];
+  assert.ok(calls.length>=4,'installer elevation/writable paths and customCheckAppRunning must invoke CmbCheckAndStopRunning');
+});

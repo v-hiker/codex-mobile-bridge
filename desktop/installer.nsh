@@ -1,3 +1,106 @@
+!macro CMB_CHECK_AND_STOP_RUNNING_BODY
+  Push $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  Push $R5
+  Push $0
+  Push $1
+  Push $2
+
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\cmb-stop-instances.ps1" "${PROJECT_DIR}\desktop\nsis-stop-instances.ps1"
+
+  StrCpy $R0 "$INSTDIR"
+  ReadRegStr $R1 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ${If} $R1 != ""
+    StrCpy $R0 "$R0;$R1"
+  ${EndIf}
+  ReadRegStr $R2 HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ${If} $R2 != ""
+    StrCpy $R0 "$R0;$R2"
+  ${EndIf}
+
+  System::Call 'kernel32::GetCurrentProcessId() i.r13'
+
+cmb_stop_inspect_loop:
+  nsExec::Exec '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\cmb-stop-instances.ps1" -Mode inspect -DirsJoined "$R0" -CallerPid $R3'
+  Pop $0
+
+  ${If} $0 == 0
+    Goto cmb_stop_done
+  ${ElseIf} $0 == 10
+    DetailPrint "正在自动停止运行中的 Codex Mobile Bridge 与网关实例..."
+    nsExec::Exec '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\cmb-stop-instances.ps1" -Mode stop -DirsJoined "$R0" -CallerPid $R3'
+    Pop $1
+    ${If} $1 == 0
+      Goto cmb_stop_done
+    ${EndIf}
+  ${ElseIf} $0 == 20
+  ${OrIf} $0 == 21
+  ${OrIf} $0 == 22
+    ${If} $0 == 22
+      StrCpy $R4 "Codex Desktop 和 ZCode"
+    ${ElseIf} $0 == 21
+      StrCpy $R4 "ZCode"
+    ${Else}
+      StrCpy $R4 "Codex Desktop"
+    ${EndIf}
+    ${If} ${Silent}
+      nsExec::Exec '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\cmb-stop-instances.ps1" -Mode stop -IncludeHolders -DirsJoined "$R0" -CallerPid $R3'
+      Pop $1
+      ${If} $1 == 0
+        Goto cmb_stop_done
+      ${EndIf}
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+    MessageBox MB_YESNO|MB_ICONQUESTION "检测到 Codex Mobile Bridge 及关联的 $R4 正在运行并占用旧版网关程序。$\r$\n$\r$\n点击「是(Y)」自动停止上述实例并继续更新（请先确认其中没有正在执行的任务）；$\r$\n点击「否(N)」取消本次更新。" IDYES cmb_stop_with_holders
+    Quit
+cmb_stop_with_holders:
+    DetailPrint "正在自动停止 $R4、Codex Mobile Bridge 与网关实例..."
+    nsExec::Exec '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\cmb-stop-instances.ps1" -Mode stop -IncludeHolders -DirsJoined "$R0" -CallerPid $R3'
+    Pop $1
+    ${If} $1 == 0
+      Goto cmb_stop_done
+    ${EndIf}
+  ${Else}
+    nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "${APP_EXECUTABLE_FILENAME}"'
+    Pop $1
+    nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "codex-mobile-gateway.exe"'
+    Pop $2
+    Sleep 500
+    Goto cmb_stop_done
+  ${EndIf}
+
+  ${If} ${Silent}
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "部分运行中的实例未能自动停止，请先手动关闭 Codex Mobile Bridge 与相关程序，然后点击「重试」继续更新。" IDRETRY cmb_stop_inspect_loop
+  Quit
+
+cmb_stop_done:
+  Pop $2
+  Pop $1
+  Pop $0
+  Pop $R5
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
+!macroend
+
+!macro customCheckAppRunning
+  !ifdef BUILD_UNINSTALLER
+    !insertmacro CMB_CHECK_AND_STOP_RUNNING_BODY
+  !else
+    Call CmbCheckAndStopRunning
+  !endif
+!macroend
+
 !ifndef BUILD_UNINSTALLER
   !macro customInit
     ${If} ${UAC_IsInnerInstance}
@@ -151,6 +254,10 @@
       BringToFront
     FunctionEnd
 
+    Function CmbCheckAndStopRunning
+      !insertmacro CMB_CHECK_AND_STOP_RUNNING_BODY
+    FunctionEnd
+
     Function CheckDirectoryElevationPre
       ${If} ${UAC_IsInnerInstance}
       ${AndIf} ${UAC_IsAdmin}
@@ -161,17 +268,20 @@
         ${EndIf}
         GetDlgItem $0 $HWNDPARENT 1
         SendMessage $0 ${BCM_SETSHIELD} 0 0
+        Call CmbCheckAndStopRunning
         Abort
       ${EndIf}
       ${If} ${UAC_IsAdmin}
         GetDlgItem $0 $HWNDPARENT 1
         SendMessage $0 ${BCM_SETSHIELD} 0 0
+        Call CmbCheckAndStopRunning
         Abort
       ${EndIf}
       Call CmbIsInstDirWritable
       ${If} $CmbDirWritable == "1"
         GetDlgItem $0 $HWNDPARENT 1
         SendMessage $0 ${BCM_SETSHIELD} 0 0
+        Call CmbCheckAndStopRunning
         Abort
       ${EndIf}
 

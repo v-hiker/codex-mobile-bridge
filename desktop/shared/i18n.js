@@ -18,7 +18,10 @@ const english={...dictionary,
   '更新版本请求无效。':'Invalid release version request.',
   '确认切换到所选版本？':'Switch to the selected version?',
   '安装包校验后会备份网关配置，并交由系统安装器或你手动完成替换。旧版可能无法识别较新的配置功能；安装完成前，当前版本继续运行。':'After verifying the package, your gateway configuration will be backed up. Complete the replacement with the system installer or manually. Older versions may not recognize newer configuration features. The current version keeps running until installation is complete.',
-  '切换版本会备份网关配置、替换当前应用并重启，继续使用现有资料。预览版可能存在未解决的问题。':'Switching versions backs up your gateway configuration, replaces the current app and restarts it with your existing data. Preview versions may have unresolved issues.'
+  '切换版本会备份网关配置、替换当前应用并重启，继续使用现有资料。预览版可能存在未解决的问题。':'Switching versions backs up your gateway configuration, replaces the current app and restarts it with your existing data. Preview versions may have unresolved issues.',
+  '检测到关联实例正在运行，是否自动停止并继续更新？':'Related instances are running. Stop them and continue updating?',
+  '点击“自动停止并继续更新”将先尝试正常退出占用网关的关联程序并释放文件锁，然后自动继续安装更新。请确认其中没有正在执行的任务。':'Clicking "Stop and continue updating" will try to quit the blocking apps gracefully to release file locks, then continue installing the update. Make sure no active tasks are running.',
+  '自动停止并继续更新':'Stop and continue updating'
 };
 function normalize(value){return typeof value==='string'&&/^en(?:-|$)/i.test(value)?'en':'zh-CN';}
 function translate(text,language){

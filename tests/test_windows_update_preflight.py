@@ -50,3 +50,53 @@ class WindowsUpdatePreflightTests(unittest.TestCase):
                 ['codex-desktop-runtime', '--configuration', 'fixture', '--', 'app-server']]:
             with self.subTest(arguments=arguments), self.assertRaisesRegex(ValueError, '正常退出 Codex'):
                 self.check(argv=[str(self.worker), *arguments])
+
+    def test_stop_update_blockers_quits_codex_gracefully_and_skips_unrelated_ancestors(self):
+        codex_exe = Path(self.directory.name) / 'ChatGPT.exe'
+        codex_exe.touch()
+        blocker = [{'provider': 'codex', 'pid': 7, 'argv': [str(self.worker), 'app-server']}]
+        with patch.object(updates, 'inspect_update_blockers', side_effect=[blocker, []]), \
+                patch.object(updates, '_identity', side_effect=[
+                    {'pid': 7, 'image': os.path.normcase(str(self.worker)), 'parent': 8},
+                    {'pid': 8, 'image': os.path.normcase(str(codex_exe)), 'parent': 1},
+                ]), \
+                patch.object(updates.codex_quit, 'stop_codex') as stop_codex, \
+                patch.object(updates, '_force_terminate_image') as force_term:
+            result = updates.stop_update_blockers(self.worker, force=True, timeout=1.0)
+        self.assertEqual(result, {'stopped': ['codex'], 'ready': True})
+        stop_codex.assert_called_once()
+        self.assertEqual(Path(stop_codex.call_args.args[0].executable), codex_exe)
+        force_term.assert_not_called()
+
+        # Unrelated ancestor (e.g., explorer.exe) must never be targeted.
+        explorer_exe = Path(self.directory.name) / 'explorer.exe'
+        explorer_exe.touch()
+        with patch.object(updates, '_identity', side_effect=[
+            {'pid': 7, 'image': os.path.normcase(str(self.worker)), 'parent': 9},
+            {'pid': 9, 'image': os.path.normcase(str(explorer_exe)), 'parent': 1},
+        ]):
+            self.assertEqual(updates._blocker_hosts(blocker, self.worker), [])
+
+    def test_stop_update_blockers_respects_force_flag_when_graceful_quit_fails(self):
+        codex_exe = Path(self.directory.name) / 'ChatGPT.exe'
+        codex_exe.touch()
+        blocker = [{'provider': 'codex', 'pid': 7, 'argv': [str(self.worker), 'app-server']}]
+        identities = [
+            {'pid': 7, 'image': os.path.normcase(str(self.worker)), 'parent': 8},
+            {'pid': 8, 'image': os.path.normcase(str(codex_exe)), 'parent': 1},
+        ]
+        with patch.object(updates, 'inspect_update_blockers', return_value=blocker), \
+                patch.object(updates, '_identity', side_effect=identities), \
+                patch.object(updates.codex_quit, 'stop_codex', side_effect=ValueError('pending')), \
+                patch.object(updates, '_force_terminate_image') as force_term:
+            with self.assertRaisesRegex(ValueError, 'pending'):
+                updates.stop_update_blockers(self.worker, force=False, timeout=0.1)
+            force_term.assert_not_called()
+
+        with patch.object(updates, 'inspect_update_blockers', side_effect=[blocker, []]), \
+                patch.object(updates, '_identity', side_effect=identities), \
+                patch.object(updates.codex_quit, 'stop_codex', side_effect=ValueError('pending')), \
+                patch.object(updates, '_force_terminate_image') as force_term:
+            result = updates.stop_update_blockers(self.worker, force=True, timeout=1.0)
+        self.assertEqual(result, {'stopped': ['codex'], 'ready': True})
+        force_term.assert_called_once_with(codex_exe)
