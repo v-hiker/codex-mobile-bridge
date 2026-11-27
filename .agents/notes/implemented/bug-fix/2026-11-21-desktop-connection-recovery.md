@@ -2,6 +2,8 @@
 
 Status: implemented
 
+后续[普通 GUI 启动自动接入](../feature/2026-11-22-codex-ordinary-launch.md)为 macOS 初始化登记启动分派器，补齐普通打开原 App 时的环境缺口；本篇的执行归属、任务保护和恢复事务继续适用。
+
 ## 问题
 
 [新版宿主接入](2026-11-21-hosted-codex-desktop.md)复用原 App 的 stdio 执行器，但连接准备错误复用了外部账号管理禁写检查，Magpie 用户因此被拒绝。准备成功后监视线程退出，后来普通启动的 App 或新出现的 hosted 端点不能自动恢复。最新回合全部消息项与逐增量快照复制还会拖慢原生输出，取消订阅也没有释放观察状态。
@@ -54,3 +56,7 @@ Status: implemented
 - [启动准备](../feature/2026-11-12-native-runtime-startup-preparation.md)：部分取代“成功后停止监视”，保留准备事务和任务保护。
 - [显式桌面启动](2026-11-16-explicit-desktop-launch.md)：继续先取得真实启动回执，随后监视连接，不用排队准备冒充启动完成。
 - [共享运行时旧提案](../../proposed/architecture/2026-11-08-codex-shared-desktop-runtime.md)：标签同步未在本次实现，保留独有缺口。
+
+跨分支的历史保留与实时发布整合见[有界历史整合](2026-11-22-hosted-history-integration.md)；其他执行身份、安全和恢复边界保留。
+
+[桌面入口与 Test 下载管理](../feature/2026-11-22-desktop-controls-and-test-updates.md)补充共享连接区块位置、主题持久化和独立 Test 安装边界；本篇仍有效的协议及安全约束保持。

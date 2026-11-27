@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import zipfile
+from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qsl
 
@@ -349,6 +350,7 @@ class Desktop:
 
     def start(self, value=None):
         temporary = (value or {}).get('connectionSecrets', {})
+        defer_legacy = sys.platform == 'darwin' and (value or {}).get('deferLegacyCredentials') is True
         self.config()
         state = self.status()
         if state['running']:
@@ -367,6 +369,7 @@ class Desktop:
         if any(c['enabled'] and c['accessMode'] == 'server' and not managed(c, self.data_dir) for c in preferences['connections']) and not shutil.which('ssh'):
             raise ValueError('未找到 OpenSSH 客户端；请先安装或启用系统 SSH 客户端')
         from bridge.features.network.server_connection import credentials
+        from bridge.features.accounts.secrets import LegacyCredentialsRequired
         for entry in preferences['connections']:
             if not entry['enabled']:
                 continue
@@ -374,7 +377,12 @@ class Desktop:
                 from bridge.features.network.tailscale import require_identity
                 require_identity(entry)
             if entry['accessMode'] == 'cloudflare' or (entry['accessMode'] == 'server' and entry.get('sshAuth', 'config') != 'config'):
-                secret = credentials(entry, self.data_dir, temporary.get(entry['id']))
+                try:
+                    secret = credentials(entry, self.data_dir, temporary.get(entry['id']))
+                except LegacyCredentialsRequired:
+                    if not defer_legacy:
+                        raise
+                    continue
                 if entry['accessMode'] == 'cloudflare' and not secret.get('tunnelToken'):
                     raise FieldError('请先填写并保存 Cloudflare Tunnel Token。', 'tunnelToken', entry['id'])
                 if entry['accessMode'] == 'server' and entry.get('sshAuth') == 'password' and not secret.get('password'):
@@ -394,6 +402,8 @@ class Desktop:
                     probe.close()
         command = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, str(project_root()/'desktop.py')]
         command += ['serve', '--data-dir', str(self.data_dir), '--connection-secrets-stdin']
+        if defer_legacy:
+            command.append('--defer-legacy-credentials')
         kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt' else {'start_new_session': True}
         # Frozen children run as independent applications, not multiprocessing workers.
         environment = {**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT': '1'}
@@ -453,7 +463,8 @@ class Desktop:
             return request_pairing(self.data_dir, {'action': 'devices', 'value': value})
         if read_record(self.data_dir/'gateway-control.json'):
             raise ValueError('网关状态暂不可用，请稍后刷新设备列表')
-        return Auth(self.config()['auth'], self.data_dir).manage(value)
+        with closing(Auth(self.config()['auth'], self.data_dir)) as auth:
+            return auth.manage(value)
 
     def notification_watches(self, value, *, preferences=None):
         if value.get('action') != 'list':
@@ -550,10 +561,13 @@ class Desktop:
                 raise ValueError('Webhook 地址读取请求格式不正确')
             return {'webhookUrl': webhook_config(settings(self.data_dir), value.get('webhookId', 'legacy')).get('webhookUrl', '')}
         if value.get('id'):
-            from bridge.features.accounts.secrets import read
+            from bridge.features.accounts.secrets import read, LegacyCredentialsRequired
             if not any(c['id'] == value['id'] for c in self.preferences()['connections']):
                 raise ValueError('请先保存连接配置。')
-            return read(self.data_dir, value['id'])
+            try:
+                return read(self.data_dir, value['id'])
+            except LegacyCredentialsRequired:
+                return {'migrationRequired': True}
         notification = settings(self.data_dir)
         result = {key: notification[key] for key in ('token', 'barkKey', 'pushplusToken')}
         initial = self.data_dir/'首次登录.txt'
@@ -570,9 +584,12 @@ class Desktop:
         entry = next((c for c in self.preferences()['connections'] if c['id'] == value.get('id')), None)
         if not entry:
             raise ValueError('请先保存连接配置。')
-        from bridge.features.accounts.secrets import save
-        save(self.data_dir, entry['id'], value.get('secrets', {}))
-        return {'message': '连接凭据已保存到系统凭据存储。'}
+        from bridge.features.accounts.secrets import save, migrate
+        if value.get('migrate') is True:
+            migrate(self.data_dir, entry['id'])
+        else:
+            save(self.data_dir, entry['id'], value.get('secrets', {}))
+        return {'message': '连接凭据已保存。'}
 
     def server_setup(self, value):
         entry = access.select_connection(self.preferences(), value, allow_disabled=True)

@@ -58,7 +58,7 @@ class ModelStore:
                   ('models', 'groups', 'modelSource', 'source', 'modelSourcesVersion', 'fastMode', 'usageSummary') if key in value}
         if isinstance(result.get('groups'), list):
             result['groups'] = [{key: item for key, item in group.items()
-                if key in ('id', 'name', 'label', 'surface', 'source', 'models', 'modelSourcesVersion')}
+                if key in ('id', 'name', 'label', 'surface', 'source', 'models', 'modelSourcesVersion', 'usageSummary')}
                 for group in result['groups'] if isinstance(group, dict)]
         return result
 
@@ -542,14 +542,9 @@ class Catalog:
         if sys.platform == 'linux':
             return Catalog.find_linux_runtime()
         if os.name == 'nt':
+            from bridge.platforms.windows.discovery import cached_runtime_candidates
             local = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData/Local')))
-            versions = []
-            for path in (local / 'OpenAI/Codex/bin').glob('*/codex.exe'):
-                try:
-                    versions.append((path.stat().st_mtime, path))
-                except OSError:
-                    continue  # An update can remove a candidate during discovery.
-            candidates = [path for _, path in sorted(versions, reverse=True)]
+            candidates = cached_runtime_candidates()
             candidates += [local / 'Programs/Codex/resources/codex.exe',
                            local / 'Programs/ChatGPT/resources/codex.exe']
             for candidate in candidates:

@@ -44,11 +44,11 @@ class AccountsPanel {
     this.sshHosts=this.node('section');this.sshHosts.hidden=true;this.root.append(this.sshHosts);
     this.tools=this.node('details');this.toolsTitle=this.node('summary');this.tools.append(this.toolsTitle);
     this.reminders=this.node('div');this.updates=this.node('section');this.tools.append(this.reminders,this.updates);this.management.append(this.tools);
-    this.desktopRuntime=this.node('section');this.desktopRuntime.hidden=true;
+    this.desktopRuntime=this.node('section',undefined,'accounts-native-runtime');this.desktopRuntime.hidden=true;
     this.runtimeStatus=this.node('p',undefined,'account-muted');
     this.initializeRuntime=this.button('初始化连接',()=>{if(window.confirm(this.text('确认所有 Codex 桌面任务已结束，并初始化原生连接？正在运行的 App 会正常退出并重新启动；账号和聊天记录保持不变。')))return this.perform({action:'initializeDesktopRuntime',requestId:this.requestId(),confirmed:true,tasksConfirmed:true});});
     this.forceInitializeRuntime=this.button('强制继续初始化',()=>{if(window.confirm(this.text('部分任务状态无法核验。继续会正常重启 Codex App，可能中断这些任务或待确认操作；聊天记录保留，可稍后继续。是否继续？')))return this.perform({action:'initializeDesktopRuntime',requestId:this.requestId(),confirmed:true,tasksConfirmed:true,acknowledgeUnavailable:true});});this.forceInitializeRuntime.hidden=true;
-    this.desktopRuntime.append(this.node('h3','Codex 原生会话连接'),this.runtimeStatus,this.initializeRuntime,this.forceInitializeRuntime);this.tools.append(this.desktopRuntime);
+    this.desktopRuntime.append(this.node('h3','Codex 原生会话连接'),this.runtimeStatus,this.initializeRuntime,this.forceInitializeRuntime);this.root.insertBefore(this.desktopRuntime,this.root.children[0]||null);
     if(!this.desktop){this.root.append(this.node('p','官方账号登录请在电脑端完成。','account-muted'));return;}
     const scanDetails=this.node('details');scanDetails.append(this.node('summary','扫描本机配置'));
     this.scanSource=this.field('Codex 配置目录');this.scanSource.input.placeholder=this.configurationPlaceholder||this.text('留空使用当前 Codex 数据目录');
@@ -167,13 +167,7 @@ class AccountsPanel {
       else if(!usage)box.append(this.node('span','正在读取额度…','account-muted'));
       else if(usage.status==='error')box.append(this.node('span',usage.error,'account-muted'));
       if(usage?.limits){
-        for(const bucket of usage.limits||[])for(const window of bucket.windows||[]){
-          const line=this.node('div',undefined,'accounts-window'),minutes=window.windowDurationMins;
-          const label=minutes?minutes%1440===0?minutes/1440+this.text(' 天'):minutes%60===0?minutes/60+this.text(' 小时'):minutes+this.text(' 分钟'):this.text('额度窗口');
-          line.append(this.node('span',bucket.name+' · '+label),this.node('strong',window.remainingPercent==null?this.text('暂未提供'):this.text('剩余 ')+Math.round(window.remainingPercent*10)/10+'%'));
-          if(window.remainingPercent!=null){const progress=this.node('progress');progress.max=100;progress.value=window.remainingPercent;progress.setAttribute('aria-label',this.text('剩余额度'));line.append(progress);}
-          if(window.resetsAt){const reset=this.node('small',undefined,'account-reset-time');reset.textContent=this.resetTime(window.resetsAt);line.append(reset);}box.append(line);
-        }
+        box.append(QuotaDisplay.pools(usage.limits,{stale:usage.status==='error'}));
         if(!usage.limits?.length)box.append(this.node('span','暂未提供额度信息','account-muted'));
         for(const bucket of usage.limits||[])if(bucket.credits){const credit=bucket.credits;if(credit.unlimited||credit.balance!=null&&String(credit.balance).trim()!=='')box.append(this.node('p',bucket.name+' · Credits: '+(credit.unlimited?this.text('不限量'):credit.balance),'account-muted'));}
         if(usage.status==='error')box.append(this.node('small','保留上次结果，数据尚未更新','account-muted'));

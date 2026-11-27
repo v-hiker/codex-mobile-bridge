@@ -15,6 +15,7 @@ const composerTools = Object.freeze(
       zone: 'bottomLeft',
       display: 'text',
     },
+    { id: 'quota', label: '剩余额度', zone: 'bottomLeft', display: 'both' },
     { id: 'sendMode', label: '发送方式', zone: 'more', display: 'text' },
     { id: 'plan', label: '计划模式', zone: 'more' },
     { id: 'goal', label: '目标模式', zone: 'more' },
@@ -49,7 +50,7 @@ function composerPreset(id) {
   if (id === 'single') {
     layout.topLeft = [];
     layout.topRight = [];
-    layout.bottomLeft = ['more', 'model'];
+    layout.bottomLeft = ['more', 'model', 'quota'];
     layout.bottomRight = ['context', 'attachments'];
     layout.more = ['permissions', 'collapse', 'skills', 'sendMode', 'plan', 'goal'];
     display.collapse = 'hidden';
@@ -83,6 +84,9 @@ function normalizeComposerLayout(value) {
     if (!seen.has(id)) {
       if (id === 'more') {
         layout.topLeft.unshift(id);
+      } else if (id === 'quota') {
+        const zone = composerZones.find((key) => layout[key].includes('model')) || 'bottomLeft';
+        layout[zone].splice(layout[zone].indexOf('model') + 1, 0, id);
       } else {
         layout.more.push(id);
       }
@@ -174,6 +178,28 @@ class ComposerPreferences {
     };
     this.events = events;
     events?.addEventListener('storage', this.onStorage);
+    this.onRestore = () => { this.publish(this.read()); this.restoreOfflinePreferences(); };
+    events?.addEventListener('bridge-composer-preferences-restored', this.onRestore);
+    this.onAuthenticated = () => this.restoreOfflinePreferences();
+    events?.document?.addEventListener('bridge-authenticated', this.onAuthenticated);
+  }
+  restoreOfflinePreferences() {
+    const feature = this.events?.BridgeOfflineComposer, before = this.value;
+    if (!feature) return;
+    void feature.preferences().then(value => {
+      if (this.value !== before) return;
+      if (value?.layout) {
+        const next = normalizeComposerPreferences(value);
+        try { this.storage?.setItem(composerPreferencesKey, JSON.stringify(next)); } catch {}
+        this.publish(next);
+      } else if (this.storage?.getItem(composerPreferencesKey)) {
+        return this.saveOfflinePreferences(before);
+      }
+    }).catch(() => {});
+  }
+  saveOfflinePreferences(value) {
+    if (this.events?.OfflineChatReader?.composerWritable === false) return;
+    return this.events?.BridgeOfflineComposer?.savePreferences(value);
   }
   read() {
     try {
@@ -223,6 +249,8 @@ class ComposerPreferences {
     }
     // Publish committed settings together across all open composers.
     this.publish(next);
+    void this.saveOfflinePreferences(next)?.catch(() => {});
+    if (globalThis.CustomEvent) this.events?.dispatchEvent?.(new CustomEvent('bridge-composer-preferences-change', {detail: next}));
   }
   setDisplay(id, mode) {
     this.update({ display: { ...this.value.display, [id]: mode } });
@@ -238,6 +266,8 @@ class ComposerPreferences {
   }
   dispose() {
     this.events?.removeEventListener('storage', this.onStorage);
+    this.events?.removeEventListener('bridge-composer-preferences-restored', this.onRestore);
+    this.events?.document?.removeEventListener('bridge-authenticated', this.onAuthenticated);
     this.listeners.clear();
   }
 }

@@ -8,6 +8,10 @@ on:
         description: Optional upstream release tag to sync (defaults to latest non-draft release)
         type: string
         default: ''
+      upstream_ref:
+        description: Optional upstream branch, tag, or commit SHA to sync (overrides release tag)
+        type: string
+        default: ''
       force_build:
         description: Build and republish current fork version even if upstream tag is already merged
         type: boolean
@@ -36,6 +40,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_TAG: ${{ inputs.upstream_tag }}
+          INPUT_REF: ${{ inputs.upstream_ref }}
           FORCE_BUILD: ${{ inputs.force_build == true }}
         run: |
           set -euo pipefail
@@ -44,10 +49,16 @@ jobs:
 
           git remote remove upstream 2>/dev/null || true
           git remote add upstream https://github.com/try2love/codex-mobile-bridge.git
-          git fetch upstream --tags --prune
+          git fetch upstream --no-tags '+refs/heads/*:refs/remotes/upstream/*' '+refs/tags/*:refs/tags/upstream/*' --prune
 
-          TARGET_TAG=$(python3 - <<'PY'
-          import json, os, urllib.request
+          REQUESTED_REF="${INPUT_REF:-}"
+          if [ -n "$REQUESTED_REF" ]; then
+            git fetch upstream "$REQUESTED_REF"
+            TARGET_TAG="$REQUESTED_REF"
+            UPSTREAM_COMMIT=$(git rev-parse --verify "FETCH_HEAD^{commit}")
+          else
+            RELEASE_META=$(python3 - <<'PY'
+          import json, os, re, urllib.request
           token = os.environ.get('GH_TOKEN', '')
           requested = os.environ.get('INPUT_TAG', '').strip()
           headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'cmb-upstream-sync'}
@@ -64,16 +75,31 @@ jobs:
               match = next((r for r in non_draft if r['tag_name'] == requested), None)
               if not match:
                   raise SystemExit(f'Upstream release tag not found: {requested}')
-              print(match['tag_name'])
           elif non_draft:
-              print(non_draft[0]['tag_name'])
+              match = non_draft[0]
           else:
               raise SystemExit('No non-draft upstream releases found.')
-          PY
+          body = match.get('body') or ''
+          hotfix_match = re.search(
+              r'(?:Desktop hotfix source|桌面补丁源码)[^\n]*try2love/codex-mobile-bridge/commit/([0-9a-f]{40})',
+              body,
           )
+          hotfix_sha = hotfix_match.group(1) if hotfix_match else ''
+          print(f"{match['tag_name']}\t{hotfix_sha}")
+          PY
+            )
+            IFS=$'\t' read -r TARGET_TAG HOTFIX_SHA <<< "$RELEASE_META"
+            echo "Latest upstream release tag: $TARGET_TAG"
+            if [ -n "${HOTFIX_SHA:-}" ]; then
+              echo "Detected hotfix commit in release notes: $HOTFIX_SHA"
+              git fetch upstream "$HOTFIX_SHA"
+              UPSTREAM_COMMIT=$(git rev-parse --verify "${HOTFIX_SHA}^{commit}")
+            else
+              UPSTREAM_COMMIT=$(git rev-parse --verify "refs/tags/upstream/${TARGET_TAG}^{commit}")
+            fi
+          fi
 
-          echo "Latest upstream release tag: $TARGET_TAG"
-          UPSTREAM_COMMIT=$(git rev-parse --verify "refs/tags/${TARGET_TAG}^{commit}")
+          echo "Resolved upstream target $TARGET_TAG -> $UPSTREAM_COMMIT"
 
           write_outputs() {
             local build="$1"

@@ -227,7 +227,7 @@ class Workbench {
   }
   url(session, operation = '', path = '', scope = 'host') {
     return this.endpoint(session,'workspace'+(operation?'/'+operation:''))+'&path='+encodeURIComponent(path)+
-      (scope==='host'&&['','info','preview','download'].includes(operation)?'&scope=host':'');
+      (scope==='host'&&['','info','preview','download','upload'].includes(operation)?'&scope=host':'');
   }
   rememberScroll() { const timeline=this.chat.querySelector('.timeline');if (this.current && !this.chat.classList.contains('workbench-active') && timeline.clientHeight) {this.current.scroll = timeline.scrollTop;(this.current.chatScroll ||= new Map()).set(this.current.chatId||this.current.id,timeline.scrollTop);} }
   select(id) {
@@ -472,7 +472,7 @@ class Workbench {
       crumb.dataset.i18nAriaLabel='完整目录路径';crumb.setAttribute('aria-label',BridgeI18n.t('完整目录路径'));crumb.placeholder=session.project||BridgeI18n.t('当前聊天的项目目录');
       address.onsubmit=event=>{event.preventDefault();session.search='';this.directory(session,tab,crumb.value.trim());};
       const go=this.button('前往',()=>address.requestSubmit());address.append(crumb,go);
-      tab.upload=this.button('上传',()=>this.uploadDialog(session,tab,tab.projectPath));tab.upload.disabled=true;
+      tab.upload=this.button('上传',()=>this.uploadDialog(session,tab,session.directory));tab.upload.disabled=true;
       toolbar.append(tab.up,address,this.button('↻',()=>this.directory(session,tab,session.directory),'刷新目录'),tab.upload);
       const filters = this.node('div', 'wb-filters');
       const search = this.node('input'); search.type = 'search'; search.setAttribute("data-i18n-placeholder",'搜索当前目录');search.placeholder = BridgeI18n.t('搜索当前目录'); search.setAttribute("data-i18n-aria-label",'搜索当前目录');search.setAttribute('aria-label', BridgeI18n.t('搜索当前目录')); search.value = session.search;
@@ -484,17 +484,22 @@ class Workbench {
       const summary=this.node('div','wb-file-summary');
       tab.project=this.button('返回项目文件夹',()=>{session.search='';this.directory(session,tab,session.project);});
       tab.project.disabled=!session.project||path===session.project;
-      summary.append(tab.status,tab.project);tab.body.append(toolbar, filters, summary, tab.list);
+      const sort=this.node('select','wb-file-sort');sort.setAttribute('aria-label',BridgeI18n.t('文件排序'));sort.dataset.i18nAriaLabel='文件排序';
+      for(const [value,label] of [['name-asc','名称升序'],['name-desc','名称降序'],['modified-desc','修改时间降序'],['modified-asc','修改时间升序'],['size-desc','大小降序'],['size-asc','大小升序']]){
+        const option=this.node('option','',label);option.value=value;sort.append(option);
+      }
+      sort.value=session.sort||'name-asc';sort.onchange=()=>{session.sort=sort.value;this.directory(session,tab,session.directory);};
+      summary.append(tab.status,sort,tab.project);tab.body.append(toolbar, filters, summary, tab.list);
     }
     try {
-      const url = this.url(session, '', path) + '&hidden=' + session.hidden + '&search=' + encodeURIComponent(session.search) + '&offset=' + (append ? tab.next : 0);
+      const url = this.url(session, '', path) + '&hidden=' + session.hidden + '&search=' + encodeURIComponent(session.search) + '&offset=' + (append ? tab.next : 0) + '&sort=' + (session.sort || 'name-asc');
       const result = await this.request(url, undefined, controller.signal);
       if (controller.signal.aborted || tab.controller!==controller || this.sessions.get(session.key)!==session || !session.files.includes(tab) || session.directory!==path) return;
       session.project=result.project;session.directory=result.path;
       tab.project.disabled=!result.project||result.path===result.project;
       if(!path)tab.initialDirectory=result.path;
       if(locateState)locateState.directory=result.path;
-      tab.parentPath=result.parentPath;tab.projectPath=result.projectPath;tab.up.disabled=result.parentPath==null;tab.upload.disabled=result.projectPath==null;
+      tab.parentPath=result.parentPath;tab.projectPath=result.projectPath;tab.up.disabled=result.parentPath==null;tab.upload.disabled=false;
       const crumb=tab.body.querySelector('.wb-path');crumb.value=result.path;crumb.title=result.path;
       delete tab.status.dataset.i18n;
       tab.status.replaceChildren(...(result.total ? [this.node('span', '', String(result.total)), this.node('span', '', ' 项 · '), this.node('span', '', session.host === 'local' ? '电脑上的文件' : 'SSH 文件')] : [this.node('span', '', '当前目录没有匹配的文件')]));
@@ -675,14 +680,14 @@ class Workbench {
     const status = this.node('p', 'wb-status'); status.setAttribute('role', 'status');
     const submit = this.node('button', 'primary', BridgeI18n.t('上传到此目录')); submit.type = 'submit';
     const cancel = this.button(BridgeI18n.t('取消'), () => dialog.close()); cancel.className = 'wb-upload-cancel'; const actions = this.node('div', 'wb-upload-actions'); actions.append(cancel, submit);
-    form.append(this.node('h2', '', BridgeI18n.t('上传文件')), this.node('p', 'wb-upload-target', BridgeI18n.t('保存到：') + (session.project || BridgeI18n.t('项目')) + '/' + directory), file, name, this.node('p', 'muted', BridgeI18n.t('单个文件最多 20 MB。同名文件不会被覆盖。')), progress, status, error, actions);
+    form.append(this.node('h2', '', BridgeI18n.t('上传文件')), this.node('p', 'wb-upload-target', BridgeI18n.t('保存到：') + directory), file, name, this.node('p', 'muted', BridgeI18n.t('单个文件最多 20 MB。同名文件不会被覆盖。')), progress, status, error, actions);
     dialog.append(form); document.body.append(dialog);
     dialog.onclose = () => { this.uploadController?.abort(); this.uploadController = null; dialog.remove(); };
     form.onsubmit = async event => {
       event.preventDefault(); const selected = file.files[0]; if (!selected || submit.disabled) return;
       if (selected.size > 20 * 1024 * 1024 || !name.value || /[\\/:\x00-\x1f]/.test(name.value) || ['.', '..'].includes(name.value)) { error.textContent = BridgeI18n.t('请选择不超过 20 MB 的文件，并填写不含路径的文件名'); return; }
       error.textContent = ''; progress.hidden = false; progress.value = 0; submit.disabled = true; file.disabled = name.disabled = true;
-      const path = (directory ? directory + '/' : '') + name.value;
+      const path = directory.replace(/\/+$/,'') + '/' + name.value;
       try {
         const result = await this.upload(this.url(session, 'upload', path), selected, value => { progress.value = value; status.textContent = value === 100 ? BridgeI18n.t('正在确认保存结果…') : BridgeI18n.t('正在上传 ') + value + '%'; });
         dialog.close(); this.notify(result.existing ? BridgeI18n.t('同名文件内容一致，已核对保存结果') : BridgeI18n.t('文件已上传到项目目录'));

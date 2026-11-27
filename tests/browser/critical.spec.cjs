@@ -18,6 +18,49 @@ async function ready(page, scenario = 'success') {
   });
 }
 
+test('Git diff reading controls change rendered text and persist in historical diffs',async({page})=>{
+  await ready(page);await page.evaluate(()=>BridgeFeatures.load('chat'));
+  await page.evaluate(()=>{
+    const node=(tag,cls='',text)=>{const element=document.createElement(tag);element.className=cls;if(text!==undefined)element.textContent=text;return element;};
+    const body=node('div');body.id='diff-reading-fixture';body.style.cssText='position:fixed;inset:0;background:white;z-index:99999;overflow:auto';document.body.append(body);
+    const workbench={node,button(text,action,label){const element=node('button','',text);element.onclick=action;if(label)element.setAttribute('aria-label',label);return element;},
+      url:()=>'/fixture?diff=1',request:async()=>window.__readingDiff};
+    window.__readingDiff={kind:'text',text:'@@ -1,40 +1,40 @@\n'+Array.from({length:40},(_,i)=>'+'+'changed '+i+' '+('long_content_'.repeat(50))).join('\n')};
+    window.__readingPanel=new GitPanel(workbench,{}, {body});
+    const header=node('div','wb-git-diff-head'),content=node('div','wb-git-diff');content.style.height='240px';content.style.flex='none';body.append(header,content);
+    window.__readingPanel.renderDiff(window.__readingDiff,content,header);
+  });
+  const fixture=page.locator('#diff-reading-fixture'),diff=fixture.locator('.wb-git-diff'),code=diff.locator('code').nth(1);
+  const original=await diff.textContent();
+  expect(await diff.evaluate(el=>el.scrollWidth>el.clientWidth)).toBe(true);
+  await fixture.locator('summary').click();
+  const before=await code.evaluate(el=>parseFloat(getComputedStyle(el).fontSize));
+  await fixture.getByRole('button',{name:'增大所有文件字号',exact:true}).click();
+  expect(await code.evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBe(before+1);
+  await diff.evaluate(el=>el.scrollTop=90);
+  await fixture.getByRole('button',{name:'自动换行',exact:true}).click();
+  expect(await diff.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+  expect(await diff.evaluate(el=>el.scrollTop)).toBe(90);
+  expect(await diff.textContent()).toBe(original);
+  await expect(diff.locator('.added .wb-diff-number').nth(1)).toHaveText('1');
+  await page.evaluate(async()=>{const area=document.createElement('div');document.getElementById('diff-reading-fixture').replaceChildren(area);await window.__readingPanel.showHistoricalDiff('fixture','file.txt',area);});
+  await expect(diff).toHaveAttribute('data-wrap','true');
+  expect(await code.evaluate(el=>parseFloat(getComputedStyle(el).fontSize))).toBe(before+1);
+  expect(await diff.textContent()).toBe(original);
+  await page.evaluate(()=>{window.__readingPanel.dispose();document.getElementById('diff-reading-fixture').remove();});
+});
+
+test('Codex initialization is available remotely and shares one confirmed native transaction',async({page})=>{
+  await ready(page,'session-menu');
+  await page.waitForFunction(()=>typeof clientNavigation!=='undefined'&&clientNavigation.clients.length>0);
+  await page.evaluate(readFileSync(path.join(__dirname,'codex-initialization.browser.js'),'utf8'));
+  const result=await page.evaluate(()=>runCodexInitializationChecks());
+  expect(result.passed).toBe(8);
+  await page.evaluate(readFileSync(path.join(__dirname,'../../desktop/features/clients/desktop-sessions.js'),'utf8')+'\nwindow.DesktopConnectionsPanel=DesktopConnectionsPanel;void 0;');
+  const desktop=await page.evaluate(()=>runCodexGatewayInitializationChecks());
+  expect(desktop.passed).toBe(4);
+});
+
 test('Git history remains available after an oversized changes list and loads older commits by page', async ({page}) => {
   await ready(page);
   await page.evaluate(readFileSync(path.join(__dirname,'../../web/features/workspace/git-panel.js'),'utf8'));
@@ -98,6 +141,34 @@ test('history cache logout session and namespace forget defeat stale writes from
       expect(await cleaner.evaluate(async({scope,now})=>{window.__historyClock=now+2;return __historyCache.read(scope);},{scope,now})).toEqual({text:'new history'});
     }
   }finally{await fixture.context.close();}
+});
+
+test('quota account switch stays below native connection and syncs across gateway pages', async ({page, context}, info) => {
+  let enabled=false;
+  await context.route('**/api/accounts',route=>route.fulfill({json:{accounts:[],current:{kind:'signedOut',status:'ready'},switch:{phase:'complete'},desktopRuntime:{supported:true,configured:true},canManageDesktop:true}}));
+  await context.route('**/api/quota-continuation',async route=>{
+    if(route.request().method()==='POST')enabled=route.request().postDataJSON().enabled;
+    await route.fulfill({contentType:'application/json',body:JSON.stringify({enabled,error:''})});
+  });
+  await ready(page,'session-menu');
+  await expect(page.locator('#sidebar #quota-continue-enabled')).toHaveCount(0);
+  await expect(page.locator('#quota-continue-enabled')).toBeHidden();
+  await page.locator('#accounts-button').click();
+  expect(await page.locator('#quota-continue-setting').evaluate(node=>node.previousElementSibling.classList.contains('accounts-native-runtime'))).toBe(true);
+  const toggle=page.locator('#quota-continue-enabled');
+  await expect(toggle).toBeVisible();await expect(toggle).toBeEnabled();
+  await expect(toggle).not.toBeChecked();await toggle.check();
+  await expect(toggle).toBeChecked();
+  const other=await context.newPage();
+  await ready(other,'session-menu');
+  await other.locator('#accounts-button').click();
+  await expect(other.locator('#quota-continue-enabled')).toBeChecked();
+  await other.locator('#quota-continue-enabled').uncheck();
+  await page.bringToFront();
+  await expect(toggle).not.toBeChecked({timeout:15000});
+  await expect(page.locator('#quota-continue-error')).toBeEmpty();
+  await info.attach('quota-account-switch',{body:await page.screenshot({path:path.resolve(__dirname,'../../.tmp/quota-account-'+info.project.name+'.png')}),contentType:'image/png'});
+  await other.close();
 });
 
 test('login status follows language changes without resetting attempts or credentials', async ({page}) => {
@@ -1328,5 +1399,47 @@ test('desktop update cache and official version controls keep download and insta
  }
  await page.evaluate(()=>{fixtureEntries=[];});await page.locator('#update-cache-refresh').click();await expect(page.locator('#update-cache-state')).toHaveText('No downloaded packages.');
  await expect(page.locator('#update-cache-all')).toBeDisabled();await expect(page.locator('#update-cache-delete')).toBeDisabled();
+ await expect(page.getByLabel('Theme',{exact:true})).toBeVisible();
+ await expect(page.locator('#appearance option')).toHaveText(['System','Light','Dark']);
+ await page.evaluate(()=>{fixtureSnapshot.update.canInstall=false;render(fixtureSnapshot);});
+ await expect(page.locator('#update-versions-install')).toBeHidden();await expect(page.locator('#install-update')).toBeHidden();
+ await expect(page.locator('#update-versions-download')).toBeEnabled();
+ await expect(page.locator('#update-state')).toContainText('Test app supports downloads');
  expect(errors).toEqual([]);
+});
+
+test('native connection section remains visible outside reminders on desktop and remote accounts',async({page})=>{
+ await ready(page,'session-menu');await page.evaluate(()=>BridgeFeatures.load('accounts'));
+ for(const desktop of [true,false]){
+  await page.evaluate(desktop=>{
+   const root=document.createElement('div');root.id='standalone-native-fixture';root.style.cssText='position:fixed;inset:10px;overflow:auto;background:white;z-index:9999';document.body.append(root);
+   const value={accounts:[],current:{status:'ready',kind:'signedOut'},switch:{phase:'complete'},desktopRuntime:{supported:true,configured:true},canManageDesktop:true};
+   const panel=new AccountsPanel({root,desktop,read:async()=>value,request:async()=>{throw Error('Unexpected write');}});panel.accept(value);panel.tools.open=false;
+   window.standaloneNativePanel=panel;
+  },desktop);
+  await expect(page.locator('#standalone-native-fixture .accounts-native-runtime')).toBeVisible();
+  expect(await page.locator('#standalone-native-fixture .accounts-native-runtime').evaluate(node=>node.parentElement.firstElementChild===node&&!node.closest('details'))).toBe(true);
+  await expect(page.locator('#standalone-native-fixture .accounts-native-runtime button').first()).toBeVisible();
+  await page.evaluate(()=>{standaloneNativePanel.clear();document.getElementById('standalone-native-fixture').remove();});
+ }
+});
+
+
+test('official account subscription and quota pools keep compact spacing on web and desktop',async({page,baseURL})=>{
+ await ready(page,'session-menu');await page.evaluate(()=>BridgeFeatures.load('accounts'));
+ for(const desktop of [false,true]){
+  if(desktop){const url=baseURL+'/__fixture_account_desktop.css';await page.route(url,route=>route.fulfill({path:path.resolve(__dirname,'../../desktop/shell/style.css'),contentType:'text/css'}));await page.addStyleTag({url});}
+  await page.evaluate(desktop=>{
+   const root=document.createElement('div');root.id='account-spacing-regression';root.style.cssText='position:fixed;inset:8px;overflow:auto;background:var(--page);padding:12px;z-index:99999';document.body.append(root);
+   const now=Date.now()/1000,usage={status:'ready',updatedAt:now,subscription:{periodEndsAt:now+86400,source:'online'},limits:[{id:'codex',name:'Codex',windows:[{windowDurationMins:300,remainingPercent:75,resetsAt:now+3600}]}],resetCredits:{availableCount:0}};
+   const value={activeId:'official',accounts:[{id:'official',kind:'chatgpt',name:'Official',email:'account@example.invalid',details:{usage}}],current:{kind:'chatgpt',id:'official',status:'ready'},switch:{phase:'complete'}};window.spacingRegression=new AccountsPanel({root,desktop,read:async()=>value,request:async()=>value});spacingRegression.accept(value);
+  },desktop);
+  const root=page.locator('#account-spacing-regression');
+  const gap=()=>root.evaluate(node=>node.querySelector('.quota-pool').getBoundingClientRect().top-node.querySelector('.account-subscription-info').getBoundingClientRect().bottom);
+  expect(await gap()).toBeGreaterThanOrEqual(4);expect(await gap()).toBeLessThanOrEqual(12);
+  await root.locator('.account-subscription-info').click();await expect(root.locator('.account-subscription-note')).toBeVisible();
+  await root.locator('.account-subscription-info').click();await expect(root.locator('.account-subscription-note')).toBeHidden();expect(await gap()).toBeLessThanOrEqual(12);
+  expect(await root.evaluate(node=>node.scrollWidth<=node.clientWidth)).toBe(true);
+  await page.evaluate(()=>{spacingRegression.clear();document.getElementById('account-spacing-regression').remove();});
+ }
 });

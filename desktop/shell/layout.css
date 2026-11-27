@@ -23,6 +23,10 @@
   --error:#b91c1c;
   --error-bg:#fef2f2;
   --error-border:#fecaca;
+  --success:var(--ok);
+  --green:var(--ok);
+  --warning:var(--warn);
+  --border:var(--line);
   --shadow-xs:0 1px 2px rgba(15,23,42,.04);
   --shadow-sm:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);
   --shadow-lg:0 16px 38px rgba(15,23,42,.12),0 2px 8px rgba(15,23,42,.06);
@@ -61,6 +65,10 @@
     --error:#f87171;
     --error-bg:rgba(239,68,68,.12);
     --error-border:rgba(239,68,68,.3);
+    --success:var(--ok);
+    --green:var(--ok);
+    --warning:var(--warn);
+    --border:var(--line);
     --shadow-xs:0 1px 2px rgba(0,0,0,.25);
     --shadow-sm:0 2px 6px rgba(0,0,0,.28);
     --shadow-lg:0 18px 42px rgba(0,0,0,.48);
@@ -245,7 +253,9 @@ p{color:var(--muted);line-height:1.65}
   color:var(--muted);
   margin:6px 0 22px;
 }
-.header-tools{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.header-tools{display:flex;align-items:center;gap:10px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end}
+.appearance-label{margin:0;display:inline-flex;align-items:center;gap:6px}
+.appearance-label>span{font-size:11.5px;color:var(--muted)}
 .language-label{margin:0;display:inline-flex;align-items:center}
 .language-label>span{display:none}
 .badge{
@@ -815,7 +825,7 @@ article{
 
 /* Modern Checkboxes */
 .check{display:flex;align-items:center;gap:10px;cursor:pointer}
-.check input[type="checkbox"],
+.check input[type="checkbox"]:not([role="switch"]),
 .update-cache-entry input[type="checkbox"]{
   appearance:none;
   -webkit-appearance:none;
@@ -833,13 +843,13 @@ article{
   cursor:pointer;
   transition:background-color .14s ease,border-color .14s ease,box-shadow .14s ease;
 }
-.check input[type="checkbox"]:checked,
+.check input[type="checkbox"]:not([role="switch"]):checked,
 .update-cache-entry input[type="checkbox"]:checked,
-.check input[type="checkbox"]:indeterminate{
+.check input[type="checkbox"]:not([role="switch"]):indeterminate{
   background:var(--accent);
   border-color:var(--accent);
 }
-.check input[type="checkbox"]:checked::after,
+.check input[type="checkbox"]:not([role="switch"]):checked::after,
 .update-cache-entry input[type="checkbox"]:checked::after{
   content:"";
   position:absolute;
@@ -851,7 +861,7 @@ article{
   border-width:0 1.9px 1.9px 0;
   transform:rotate(42deg);
 }
-.check input[type="checkbox"]:indeterminate::after{
+.check input[type="checkbox"]:not([role="switch"]):indeterminate::after{
   content:"";
   position:absolute;
   left:3.5px;
@@ -861,12 +871,12 @@ article{
   border-radius:1px;
   background:#ffffff;
 }
-.check input[type="checkbox"]:focus-visible,
+.check input[type="checkbox"]:not([role="switch"]):focus-visible,
 .update-cache-entry input[type="checkbox"]:focus-visible{
   outline:2px solid var(--accent);
   outline-offset:2px;
 }
-.check input[type="checkbox"]:disabled,
+.check input[type="checkbox"]:not([role="switch"]):disabled,
 .update-cache-entry input[type="checkbox"]:disabled{
   opacity:.45;
   cursor:not-allowed;
@@ -1078,6 +1088,9 @@ pre{
 }
 #dirty-fields button{display:block;width:100%;text-align:left;border:0;white-space:normal;overflow-wrap:anywhere}
 [data-unsaved="true"]{outline:2px solid var(--warn);outline-offset:2px}
+.update-cache-in-use{color:var(--warn)}
+#update-cache-state.state-error,#update-versions-state.state-error{color:var(--error)}
+body .account-card{border-color:var(--line)}
 
 @media(max-width:950px){
   body>aside{width:208px;padding:18px 12px}

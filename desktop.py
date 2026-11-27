@@ -14,10 +14,18 @@ _DESKTOP_ACTIONS = (
 )
 _DESKTOP_ENTRYPOINTS = frozenset((
     *_DESKTOP_ACTIONS,
-    'codex-desktop-runtime', '--terminal-child', 'zcode-pipe-host',
+    'codex-desktop-launch', 'codex-desktop-runtime', '--terminal-child', 'zcode-pipe-host',
     'local-service-host', 'antigravity-hook', '-h', '--help',
 ))
 
+if sys.argv[1:2] == ['codex-desktop-launch']:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--configuration', required=True)
+    parser.add_argument('arguments', nargs=argparse.REMAINDER)
+    options = parser.parse_args(sys.argv[2:])
+    from bridge.clients.codex.desktop_runtime_windows import ordinary_run
+    arguments = options.arguments[1:] if options.arguments[:1] == ['--'] else options.arguments
+    raise SystemExit(ordinary_run(options.configuration, arguments))
 if sys.platform == 'win32' and os.environ.get('CMB_CODEX_DESKTOP_CONFIGURATION'):
     from bridge.clients.codex.desktop_runtime_windows import run as windows_runtime_main
     raise SystemExit(windows_runtime_main(os.environ['CMB_CODEX_DESKTOP_CONFIGURATION'], sys.argv[1:]))
@@ -81,6 +89,7 @@ def main():
     parser.add_argument('--data-dir', required=True)
     parser.add_argument('--plan')
     parser.add_argument('--connection-secrets-stdin', action='store_true')
+    parser.add_argument('--defer-legacy-credentials', action='store_true')
     args = parser.parse_args()
     desktop = Desktop(args.data_dir)
     if args.action == 'management-stream':
@@ -116,7 +125,8 @@ def main():
     if args.action == 'serve':
         import run
         sys.argv = [sys.argv[0], *desktop.argv()]
-        run.main(connections=desktop.preferences()['connections'], connection_secrets=json.loads(sys.stdin.read(1000000) or '{}') if args.connection_secrets_stdin else {})
+        run.main(connections=desktop.preferences()['connections'], connection_secrets=json.loads(sys.stdin.read(1000000) or '{}') if args.connection_secrets_stdin else {},
+                 defer_legacy_credentials=args.defer_legacy_credentials and sys.platform == 'darwin')
         return
     try:
         if args.action == 'update-preflight':

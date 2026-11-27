@@ -9,6 +9,7 @@ const {createTray}=require('./shell/tray.cjs');
 const {createIconTheme}=require('./shell/icons.cjs');
 const {normalize,translate}=require('./shared/i18n.js');
 const {publishLanguage}=require('./shared/gateway-language.cjs');
+const {readAppearance,saveAppearance}=require('./shell/appearance.cjs');
 const cloudflared=require('./features/connections/cloudflared.cjs');
 const {Updater,allowedMirrorUrl,allowedCatalogueUrl,activeUpdateHandoff}=require('./features/updates/updater.cjs');
 const {relaunchMacUpdate,restoreMacUpdate}=require('./features/updates/mac-handoff.cjs');
@@ -172,17 +173,25 @@ async function installUpdate(candidate){
   }
   throw Error('无法启动应用更新进程。');
 }
+function appearance(theme){
+  if(theme!==undefined)saveAppearance(dataDir,theme);
+  nativeTheme.themeSource=readAppearance(dataDir);
+  return {theme:nativeTheme.themeSource};
+}
 function setupUpdater(){
   const updateDirectory=path.join(app.getPath('userData'),'updates');
   const updateTools=require('./features/updates/updater.cjs');
   startupCleanup.catch(()=>{});
   // Remove incomplete downloads left by a crash. Complete verified packages
   // remain available until the user explicitly deletes them.
+  const packageName=require(path.join(root,'package.json')).name;
+  const supported=app.isPackaged&&['codex-mobile-bridge-desktop','codex-mobile-bridge-test'].includes(packageName)&&['darwin','win32','linux'].includes(process.platform);
+  const installSupported=supported&&packageName==='codex-mobile-bridge-desktop';
   updater=new Updater({current:app.getVersion(),key:fs.readFileSync(path.join(__dirname,'features/updates/update-public-key.pem')),
     fetch:cloudflared.electronFetch(net,allowedMirrorUrl),directory:updateDirectory,
     catalogueFetch:cloudflared.electronFetch(net,allowedCatalogueUrl),
     skipFile:path.join(app.getPath('userData'),'skipped-update.json'),format:process.platform==='linux'?(process.env.APPIMAGE?'AppImage':'deb'):'zip',
-    supported:app.isPackaged&&require(path.join(root,'package.json')).name==='codex-mobile-bridge-desktop'&&['darwin','win32','linux'].includes(process.platform),
+    supported,installSupported,
     preflight:process.platform==='win32'?async()=>{
       await startupCleanup;
       await updateTools.cleanDownloadStaging(updateDirectory);
@@ -190,8 +199,10 @@ function setupUpdater(){
     }:undefined,install:installUpdate});
   startupCleanup=updateTools.cleanDownloadStaging(updateDirectory);
   startupCleanup.catch(()=>{});
-  setTimeout(()=>updater.check(),5000).unref();
-  setInterval(()=>updater.check(),6*60*60*1000).unref();
+  if(installSupported){
+    setTimeout(()=>updater.check(),5000).unref();
+    setInterval(()=>updater.check(),6*60*60*1000).unref();
+  }
 }
 function showWindow(){
   if(!window)createWindow();
@@ -199,6 +210,7 @@ function showWindow(){
   window.show();window.focus();
 }
 function register(){
+  ipcMain.handle('bridge:appearance',(event,theme)=>{authorize(event);return appearance(theme);});
   ipcMain.handle('bridge:check-update',(event,payload)=>{authorize(event);return updater.check({manual:true,channel:payload?.channel});});
   ipcMain.handle('bridge:skip-update',event=>{authorize(event);return updater.skip();});
   ipcMain.handle('bridge:update-versions',async(event,payload)=>{
@@ -242,6 +254,7 @@ function register(){
   });
   ipcMain.handle('bridge:install-update',async(event,payload)=>{
     authorize(event);
+    if(updater.status().canInstall===false)throw Error('Test 版支持下载和缓存管理，请手动安装所选版本。');
     const blocked=()=>installPending||workerWrites||setupPending||cacheDeleting||updateManaged();
     if(blocked()||updateConfirmation||updateStarting)throw Error('请等待当前操作完成后再更新。');
     const value=updater.status(),candidateId=payload?.candidateId;
@@ -284,6 +297,7 @@ function register(){
       if(service!==officialRemote||service.disposed)throw Error('网关资料目录已变化，请重新打开管理页。');
       if(payload.action==='zcode-official-state')return service.status();
       if(payload.action==='zcode-official-save')return service.save(payload.link);
+      if(payload.action==='zcode-official-migrate')return service.migrateLogin();
       if(payload.action==='zcode-official-login')return service.login(payload.link);
       if(payload.action==='zcode-official-browser-login')return service.login(payload.link,{external:true});
       if(payload.action==='zcode-official-login-receipt')return service.completeLoginReceipt(payload.receipt);
@@ -340,13 +354,20 @@ function register(){
     if(updater?.busy)throw Error('正在更新应用，请稍候。');
     const current=await worker('snapshot');
     if(!current.preferences.connections.some(c=>c.id===value?.id))throw Error('请先保存连接配置。');
+    if(value.migrate===true){
+      if(Object.keys(value).some(key=>!['id','migrate'].includes(key)))throw Error('连接凭据迁移格式不正确');
+      const previous=connectionSecrets[value.id];
+      const result=await worker('connection-credentials',{id:value.id,migrate:true});
+      if(connectionSecrets[value.id]===previous)delete connectionSecrets[value.id];
+      return result;
+    }
     const secret=value.secrets;
     if(!secret||typeof secret!=='object'||Object.keys(secret).some(key=>!['password','passphrase','tunnelToken','clear'].includes(key)))throw Error('连接凭据格式不正确');
     for(const [key,text] of Object.entries(secret))if(key!=='clear'&&(typeof text!=='string'||text.length>16384||text.includes('\0')))throw Error('连接凭据格式不正确');
     if(secret.clear){await worker('connection-credentials',{id:value.id,secrets:{clear:true}});delete connectionSecrets[value.id];}
     else if(value.remember){await worker('connection-credentials',{id:value.id,secrets:secret});delete connectionSecrets[value.id];}
     else connectionSecrets[value.id]={...connectionSecrets[value.id],...secret};
-    return {message:value.remember?'连接凭据已保存到系统凭据存储。':'连接凭据仅保留在本次 App 运行内存中。'};
+    return {message:value.remember?'连接凭据已保存。':'连接凭据仅保留在本次 App 运行内存中。'};
   });
   ipcMain.handle('bridge:copy-server-diagnostics',async(event,value)=>{
     authorize(event);const result=await worker('server-setup',{id:value.id,action:'diagnostics',language:value.language});
@@ -388,7 +409,7 @@ function register(){
     authorize(event);
     const grant=await worker('pairing',payload);
     if(payload.action!=='create')return grant;
-    try{return await pairingImage(grant);}
+    try{return await pairingImage(payload.purpose==='history-transfer'?{...grant,url:grant.url+'&transfer=local'}:grant);}
     catch(error){await worker('pairing',{action:'revoke',id:grant.id});throw error;}
   });
   ipcMain.handle('bridge:export-deployment',async(event,payload)=>{
@@ -421,7 +442,7 @@ function register(){
       installStatus={};connectionSecrets={};
       const changed=selected!==dataDir;
       if(changed){officialRemote?.dispose();officialRemote=null;}
-      publishLanguage(selected,language);dataDir=selected;saveDataDir(dataDir);
+      publishLanguage(selected,language);dataDir=selected;saveDataDir(dataDir);appearance();
       if(changed)restoreOfficialService();
     }
     return selected;
@@ -471,7 +492,14 @@ async function acknowledgeUpdate(){
     if(updateManaged()&&handoff.dataDir===dataDir){
       fs.writeFileSync(path.join(handoff.transaction,'ack.json'),JSON.stringify({token:handoff.token,version:app.getVersion(),dataDir}),{mode:0o600,flag:'wx'});
     }
-  }catch{} // Missing acknowledgement makes the independent helper restore the old app.
+  }catch(error){
+    // The previous updater also reads this file. Keep its rollback decision,
+    // but retain the real startup failure instead of a silent ACK timeout.
+    if(updateManaged())try{
+      fs.appendFileSync(path.join(handoff.transaction,'new-app.log'),
+        'Update startup failed: '+String(error?.message||error).slice(0,2000)+'\n',{mode:0o600});
+    }catch{}
+  }
 }
 function createWindow(hidden=false){
   window=new BrowserWindow({show:!hidden,width:1120,height:860,minWidth:860,minHeight:640,autoHideMenuBar:process.platform!=='darwin',title:t('Codex 手机网关'),icon:iconTheme.windowIcon(),backgroundColor:'#f4f6fa',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
@@ -497,7 +525,7 @@ else{
     try{
       language=normalize(app.getLocale());
       try{language=normalize(JSON.parse(fs.readFileSync(path.join(app.getPath('userData'),'language.json'),'utf8')).language);}catch{}
-      dataDir=loadDataDir();publishLanguage(dataDir,language);
+      dataDir=loadDataDir();publishLanguage(dataDir,language);appearance();
       setupUpdater();register();
       if(process.platform!=='darwin')Menu?.setApplicationMenu?.(null);
       if(process.platform==='win32')app.setAppUserModelId('io.github.try2love.codexmobilebridge');

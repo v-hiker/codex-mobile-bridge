@@ -108,7 +108,7 @@ test('development launch keeps script as its own argument',()=>{
 async function renderer(initialLanguage='zh-CN',{autoStart=false,hidden=false,loginStartup,AccountsPanel,DesktopConnectionsPanel,platform='darwin'}={}){
   const fs=require('node:fs'),vm=require('node:vm');
   const nodes=new Map();
-  function node(){return {parentNode:{insertBefore(){}},getAnimations(){return [];},animate(){},scrollIntoView(){},focus(){},addEventListener(){},closest(){return null;},value:'',checked:false,hidden:false,textContent:'',dataset:{},
+  function node(){return {parentNode:{insertBefore(){}},getAnimations(){return [];},animate(){},scrollIntoView(){},focus(){},addEventListener(){},closest(){return null;},querySelector(){return null;},value:'',checked:false,hidden:false,textContent:'',dataset:{},
     classList:{toggle(){},add(){},contains(){return false;}},before(item){this.beforeNode=item;},get options(){return this.children||[];},click(){return this.onclick?.();},append(...items){this.children=(this.children||[]).concat(items);},replaceChildren(...items){this.children=items;},setAttribute(){},removeAttribute(){},querySelectorAll(){return [];}};}
   const html=fs.readFileSync(path.join(__dirname,'../desktop/index.html'),'utf8');
   for(const match of html.matchAll(/\bid="([^"]+)"/g))nodes.set(match[1],node());
@@ -123,10 +123,10 @@ async function renderer(initialLanguage='zh-CN',{autoStart=false,hidden=false,lo
   const api={platform,account:async()=>({visible:false}),language:async()=>initialLanguage,setLanguage:async value=>value,snapshot:async()=>{calls.push('snapshot');return structuredClone(value);},start:async()=>{calls.push('start');return {started:true,message:'正在启动网关'};},
     save:async payload=>{value.preferences={...value.preferences,...payload.preferences};return structuredClone(value);},logs:async()=>({text:''})};
   api.cliAccess=async payload=>{calls.push({cliAccess:structuredClone(payload)});return payload.operation==='environments'?{provider:payload.provider,environments:[]}:{provider:payload.provider,entry:payload.entry,identity:'fixture-identity',available:true,accounts:[],blockers:[],capabilities:{switch:true,models:true}};};
-  const context=vm.createContext({window:{bridgeDesktop:api},AccountsPanel,DesktopConnectionsPanel,Option:function(text,value){return Object.assign(node(),{textContent:text,value});},
+  const context=vm.createContext({window:{bridgeDesktop:api,addEventListener(){}},AccountsPanel,DesktopConnectionsPanel,Option:function(text,value){return Object.assign(node(),{textContent:text,value});},
     localStorage:{getItem(){return null;},setItem(){}},document:{head:{append(script){script.onload?.();}},hidden,addEventListener(name,fn){this[name]=fn;},documentElement:{},getElementById:id=>nodes.get(id),createElement:node,querySelectorAll:()=>[]},
     URL,Date:class extends Date{static now(){return now;}},setTimeout(){},clearTimeout(){},clearInterval(){},setInterval:(callback,ms)=>{if(callback.name==='refresh')poll=callback;}});
-  for(const name of ['web/shared/i18n.js','desktop/shared/secret-fields.js','desktop/features/connections/connections.js','desktop/features/connections/pairing.js','web/features/accounts/account.js','desktop/features/notifications/watches.js','web/features/accounts/wsl-accounts.js','desktop/shell/renderer.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',name),'utf8'),context);
+  for(const name of ['web/shared/i18n.js','desktop/shared/secret-fields.js','desktop/features/connections/connections.js','desktop/features/connections/pairing.js','web/features/accounts/account.js','desktop/features/notifications/watches.js','web/features/accounts/wsl-accounts.js','web/shared/quota-continuation.js','desktop/shell/renderer.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',name),'utf8'),context);
   await new Promise(setImmediate);
   return {nodes,value,context,api,calls,run:code=>vm.runInContext(code,context),poll:()=>poll(),advance:ms=>{now+=ms;},start:()=>nodes.get('start').onclick()};
 }
@@ -312,6 +312,22 @@ test('disabled connection ignores stale online status',async()=>{
   ui.context.document.querySelectorAll=selector=>selector==='[data-connection-status]'?[status]:[];
   ui.value.externalStatus={entry:{message:'入口仍显示已连接'}};
   await ui.poll();assert.equal(status.textContent,'已配置但未启用');
+});
+
+test('an updated gateway keeps the legacy credential notice visible until restart clears it',async()=>{
+  for(const language of ['zh-CN','en']){
+    const ui=await renderer(language),notice=ui.nodes.get('credential-migration');
+    assert.equal(notice.hidden,true);
+    ui.value.runtime.running=true;
+    ui.value.externalStatus={legacy:{state:'credentials-required'}};
+    await ui.poll();assert.equal(notice.hidden,false);
+    assert.match(notice.textContent,language==='en'?/Migrate.*restart/:/迁移.*重启/);
+    await ui.poll();assert.equal(notice.hidden,false,'normal refresh must not dismiss the required action');
+    ui.value.externalStatus={legacy:{state:'ready'}};
+    await ui.poll();assert.equal(notice.hidden,true);
+    ui.value.externalStatus={legacy:{state:'credentials-required'}};ui.value.runtime.running=false;
+    await ui.poll();assert.equal(notice.hidden,true,'stopped gateway must not show stale connector state');
+  }
 });
 
 test('fixed-entry retry replaces an earlier error in card and summary across polling',async()=>{
@@ -717,7 +733,7 @@ test('Windows packaging requires the complete locked ConPTY pair',async()=>{
     await fs.mkdir(path.join(root,'scripts'));
     await fs.writeFile(path.join(root,'dist/update-version.json'),JSON.stringify({platform:'win32',arch:'x64',version:'1.2.2',dataFormat:'bridge-data-v1'}));
     await fs.writeFile(path.join(root,'dist/gateway/codex-mobile-gateway.exe'),'fixture');
-    for(const name of ['claude-bridge-helper.exe','codex-quit-helper.exe'])
+    for(const name of ['claude-bridge-helper.exe','codex-quit-helper.exe','codex-launcher.exe'])
       await fs.writeFile(path.join(runtime,'client-helpers',name),'fixture');
     await fs.writeFile(path.join(root,'scripts/cloudflared-lock.json'),JSON.stringify({version:'fixture'}));
     await fs.writeFile(path.join(runtime,'cloudflared/version.json'),JSON.stringify({platform:'win32',arch:'amd64',version:'fixture'}));

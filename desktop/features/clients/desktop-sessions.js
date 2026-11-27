@@ -177,6 +177,15 @@ class DesktopConnectionsPanel {
       finally{this.choosingClient=null;this.renderClients();this.renderScan();}
       if(choice===null||initializeDesktop&&!choice)return;
     }
+    if(id==='codex'&&initializeDesktop){
+      this.busy=true;this.operationFailures??=new Map();this.operationFailures.delete(id);this.renderClients();
+      try{
+        await ClientLifecycle.request(()=>this.api.accounts({action:'initializeDesktopRuntime',...ClientLifecycle.codexInitialization(choice)}),{timeout:this.lifecycleTimeout??45000});
+        this.feedback(BridgeI18n.t('正在初始化 Codex 连接'));
+      }catch(error){this.operationFailures.set(id,ClientLifecycle.failure('initialize',error,'desktop'));this.feedback(error.message,true);}
+      finally{this.busy=false;await this.refreshClients(true);}
+      return;
+    }
     const intent={...ClientLifecycle.initializationFields(initializeDesktop&&choice),...(connectionMode?{connectionMode}:{})};
     const acknowledgeUnavailable=!enabled&&choice==='recovery',forceDesktop=choice==='force';
     const quitDesktop=!enabled&&(choice===true||forceDesktop||acknowledgeUnavailable);
@@ -272,7 +281,7 @@ class DesktopConnectionsPanel {
       if(!failure&&(state.canConnectWsl||this.connectingWsl===client.id)&&this.gatewayRunning!==false){const connect=node('button',this.connectingWsl===client.id?'正在连接，请稍候…':'启动并连接 WSL','primary');connect.type='button';connect.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();connect.onclick=()=>this.connectWsl(client.id);buttons.append(connect);}
       if(failure){const retry=node('button',failure.uncertain?'刷新状态':ClientLifecycle.retryLabel(failure.action),'primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||!!this.clientsLoading||(!failure.uncertain&&this.hasUncertain());retry.onclick=()=>failure.uncertain?this.refreshClients(true):this.retryOperation(client.id);buttons.append(retry);}
       if(!failure&&state.retryable&&this.gatewayRunning!==false){const retry=node('button','重试连接','primary');retry.type='button';retry.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();retry.onclick=()=>this.toggleClient(client.id,true);buttons.append(retry);}
-      if(!failure?.uncertain&&client.id==='zcode'&&state.canInitialize&&this.gatewayRunning!==false){
+      if(!failure?.uncertain&&['codex','zcode'].includes(client.id)&&state.canInitialize&&this.gatewayRunning!==false){
         const initialize=node('button',state.initializeLabel);initialize.type='button';initialize.disabled=this.busy||this.scanning||!!this.choosingClient||this.hasUncertain();initialize.onclick=()=>this.toggleClient(client.id,true,{initializeDesktop:true});buttons.append(initialize);
       }
       if(!failure&&client.id==='deepseek'&&client.backgroundRunning&&(!client.mainRunning||['restart-required','failed'].includes(client.setupStatus))){
@@ -416,7 +425,7 @@ class DesktopConnectionsPanel {
     const status=node('p'),reason=node('p',undefined,'hint'),saved=node('p',undefined,'hint');status.setAttribute('role','status');reason.setAttribute('role','status');saved.setAttribute('role','status');
     const label=node('label'),link=node('input');link.type='url';link.autocomplete='off';link.spellcheck=false;link.maxLength=4096;link.placeholder=BridgeI18n.t('粘贴此电脑的 Web 远程控制链接');label.append(node('span','官方远控链接'),link);
     const actions=node('div',undefined,'actions'),buttons={};
-    for(const [action,text] of [['save','保存连接配置'],['login','登录官方账号'],['browser-login','使用系统浏览器登录'],['connect','连接官方远控'],['disconnect','断开官方远控'],['forget','清除官方登录']]){
+    for(const [action,text] of [['save','保存连接配置'],['login','登录官方账号'],['migrate','迁移旧登录'],['browser-login','使用系统浏览器登录'],['connect','连接官方远控'],['disconnect','断开官方远控'],['forget','清除官方登录']]){
       const button=node('button',text);button.type='button';button.dataset.officialAction=action;buttons[action]=button;actions.append(button);
     }
     const receiptRow=node('div'),receiptLabel=node('label'),receipt=node('input'),submitReceipt=node('button','提交授权回执');
@@ -431,14 +440,15 @@ class DesktopConnectionsPanel {
       if(value&&guidePending){guide.open=!value.configured;guidePending=false;}
       status.textContent=value?[(value.configured?BridgeI18n.t('已登录')+(value.accountName?' · '+value.accountName:'')+(value.provider?' · '+value.provider:''):BridgeI18n.t('尚未登录官方账号')),
         BridgeI18n.t(value.connected?'官方远控已连接':'官方远控未连接')].join('；'):'';
-      reason.textContent=BridgeI18n.t(busy?({state:'正在刷新状态…',save:'正在保存连接配置…',login:'正在打开官方登录…','browser-login':'正在打开官方登录…','login-receipt':'正在提交授权回执…',connect:'正在连接官方远控…',disconnect:'正在断开官方远控…',forget:'正在清除官方登录…'})[pendingAction]:error||value?.reason||'');reason.className=error?'error':'hint';
+      reason.textContent=BridgeI18n.t(busy?({state:'正在刷新状态…',save:'正在保存连接配置…',login:'正在打开官方登录…','browser-login':'正在打开官方登录…',migrate:'正在迁移旧登录…','login-receipt':'正在提交授权回执…',connect:'正在连接官方远控…',disconnect:'正在断开官方远控…',forget:'正在清除官方登录…'})[pendingAction]:error||value?.reason||'');reason.className=error?'error':'hint';
       saved.textContent=BridgeI18n.t(edited?'连接配置已修改，尚未保存。':loadedLink?'连接配置已保存。登录失效时需要重新验证。':'请保存此电脑的官方远控链接，再完成官方登录。');label.dataset.dirty=String(edited);
       link.disabled=busy;refresh.disabled=busy;for(const button of Object.values(buttons))button.disabled=busy||unavailable;
       buttons.save.disabled=busy||unavailable||!link.value.trim()||!edited;buttons.login.disabled=busy||unavailable||!loadedLink||edited;buttons.connect.disabled=busy||unavailable||!value?.configured||!loadedLink||edited||value?.connected===true;
       buttons['browser-login'].disabled=buttons.login.disabled;
+      buttons.migrate.hidden=!value?.legacyLoginSaved;buttons.migrate.disabled=busy||unavailable||!value?.legacyLoginSaved||edited;
       receiptRow.hidden=!value?.browserLoginPending;if(receiptRow.hidden)receipt.value='';receipt.disabled=busy;
       submitReceipt.disabled=busy||unavailable||edited||!value?.browserLoginPending||!receipt.value.trim();
-      buttons.disconnect.disabled=busy||!value?.connected;buttons.forget.disabled=busy||!value?.configured;
+      buttons.disconnect.disabled=busy||!value?.connected;buttons.forget.disabled=busy||!(value?.configured||value?.loginSaved);
     };
     const perform=async action=>{
       if(busy||this.busy||this.scanning||this.choosingClient)return;

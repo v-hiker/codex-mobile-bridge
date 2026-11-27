@@ -9,6 +9,7 @@ import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from unittest.mock import Mock
 
@@ -20,6 +21,31 @@ from bridge.clients.codex.ipc import DesktopIPC, IPCError, validate_stream_state
 
 
 class HostedOwnerTests(unittest.TestCase):
+    def test_desktop_readiness_uses_native_endpoint_or_real_desktop_snapshot(self):
+        from bridge.app.service import Bridge
+        bridge = SimpleNamespace(local=True, observation_enabled=lambda:True, codex_home=Path('/fixture'),
+            ipc=SimpleNamespace(lock=threading.RLock(), socket=object(), client_id='client'),
+            lock=threading.RLock(), live={})
+        with patch.object(runtime, 'hosted_endpoint', return_value=None) as endpoint:
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            bridge.live['ide'] = SimpleNamespace(origin='ide', runtime='desktop', connected=True)
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            bridge.live['desktop'] = SimpleNamespace(origin='desktop', runtime='desktop', connected=True)
+            self.assertTrue(Bridge.desktop_connection_ready(bridge))
+            bridge.ipc.socket = None
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            endpoint.return_value = {'path':'/verified.sock', 'generation':'g'}
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            bridge.ipc.socket = object()
+            bridge.ipc.hosted = True
+            bridge.ipc.path = '/verified.sock'
+            bridge.ipc.hosted_generation = 'g'
+            self.assertTrue(Bridge.desktop_connection_ready(bridge))
+            bridge.ipc.hosted_generation = 'previous'
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+            endpoint.side_effect = ValueError('process generation changed')
+            self.assertFalse(Bridge.desktop_connection_ready(bridge))
+
     def test_primary_app_and_its_bundled_host_have_the_same_verified_owner(self):
         app = {'pid': 1, 'parent': 99, 'image': '/Applications/Codex.app/Contents/MacOS/Codex'}
         host = {'pid': 2, 'parent': 1, 'image': '/Applications/Codex.app/Contents/Frameworks/Runtime.framework/Helpers/Host.app/Contents/MacOS/Host'}
@@ -160,7 +186,8 @@ class HostedSessionTests(unittest.TestCase):
             if method == 'initialize': value = {'codexHome': self.temp.name}
             elif method == 'thread/loaded/list': value = {'data': ['t'], 'nextCursor': None}
             elif method == 'thread/read': value = {'thread': copy.deepcopy(self.thread)}
-            elif method == 'thread/turns/list': value = {'data': copy.deepcopy(self.turns[-1:]), 'nextCursor': 'older' if len(self.turns) > 1 else None}
+            elif method == 'thread/turns/list': value = {'data': copy.deepcopy(list(reversed(self.turns[-params['limit']:]))),
+                'nextCursor': 'older' if len(self.turns) > params['limit'] else None}
             elif method == 'thread/items/list':
                 rows = [copy.deepcopy(row) for row in self.items if params.get('turnId', row['turnId']) == row['turnId']]
                 if params.get('sortDirection') == 'desc': rows.reverse()
@@ -186,6 +213,19 @@ class HostedSessionTests(unittest.TestCase):
         self.addCleanup(self.router.close)
         self.router.from_app({'id': 1, 'method': 'initialize', 'params': {}})
 
+    def test_additive_features_fields_items_and_notifications_preserve_baseline_control(self):
+        self.thread['newFeature'] = {'enabled': True}
+        self.turns[0]['newFeature'] = {'enabled': True}
+        self.items.append({'turnId': 'turn', 'item': {'id': 'future', 'type': 'futureWidget', 'newField': [1, 2]}})
+        state = self.sessions.attach('t')
+        validate_stream_state(101, {**state, 'futureState': {'enabled': True}})
+        event = {'method': 'futureFeature/progress', 'params': {'threadId':'t', 'newField': {'x':1}}}
+        self.router.from_native(event)
+        self.assertEqual(self.app[-1], event)
+        result = self.sessions.call('t', 'thread-follower-start-turn', {'message':'baseline after additive update'})
+        self.assertIsInstance(result, dict)
+        self.assertTrue(any(packet.get('method') == 'turn/start' for packet in self.writes))
+
     def test_passive_attach_reads_paged_history_without_resuming(self):
         state = self.sessions.attach('t')
         validate_stream_state(99, state)
@@ -196,6 +236,105 @@ class HostedSessionTests(unittest.TestCase):
         self.assertNotIn('thread/start', methods)
         self.assertNotIn('turn/start', methods)
         with self.assertRaises(AppServerRequestNotSent): self.sessions.attach('saved-only')
+
+    def test_new_paginated_turn_keeps_visible_history_before_any_output(self):
+        from bridge.app.service import LiveSession
+        before = self.sessions.attach('t')
+        display = LiveSession('t')
+        with display.condition:
+            display.set_history(before)
+            display.connected = True
+            display.state = before
+        self.assertEqual(display.view()['turns'][0]['messages'][0]['text'], 'history')
+        self.turns.append({'id': 'new-turn', 'status': 'inProgress', 'items': []})
+        self.items.append({'turnId': 'new-turn', 'item': {
+            'type': 'userMessage', 'id': 'input', 'content': [{'type': 'inputText', 'text': 'new input'}]}})
+        self.thread['status'] = {'type': 'active'}
+        display.state = self.sessions.refresh('t')
+        visible = display.view()
+        self.assertEqual([turn['id'] for turn in visible['turns']], ['turn', 'new-turn'])
+        self.assertEqual(visible['turns'][0]['messages'][0]['text'], 'history')
+        self.assertEqual(visible['turns'][1]['messages'][0]['text'], 'new input')
+
+    def test_paginated_tail_uses_only_observed_native_confirmed_items(self):
+        self.sessions.attach('t')
+        for i in range(45):
+            tid = 'next-' + str(i)
+            self.turns.append({'id': tid, 'status': 'completed', 'items': []})
+            self.items.append({'turnId': tid, 'item': {'id': tid, 'type': 'agentMessage', 'text': tid}})
+            state = self.sessions.refresh('t')
+            self.assertEqual([t['turnId'] for t in state['turns']], [t['id'] for t in self.turns[-40:]])
+        queries = [m['params'] for m in self.writes if m.get('method') == 'thread/items/list']
+        self.assertEqual([p['turnId'] for p in queries], ['turn'] + ['next-' + str(i) for i in range(45)])
+        self.assertFalse(state['turnsPagination']['hasLoadedOldest'])
+
+    def test_rollback_and_complete_snapshots_discard_removed_cached_turns(self):
+        self.sessions.attach('t')
+        self.turns.append({'id': 'new-turn', 'status': 'completed', 'items': []})
+        self.sessions.refresh('t')
+        # Native headers no longer confirm the old turn, even if the tail id stays.
+        self.turns = self.turns[-1:]
+        state = self.sessions.refresh('t')
+        self.assertEqual([t['turnId'] for t in state['turns']], ['new-turn'])
+        self.assertTrue(state['turnsPagination']['hasLoadedOldest'])
+        self.thread.update(historyMode='full', turns=[])
+        self.assertEqual(self.sessions.refresh('t')['turns'], [])
+
+    def test_reconnect_does_not_reuse_previous_connection_history(self):
+        self.sessions.attach('t')
+        self.sessions._invalidate('t')
+        self.turns.append({'id': 'new-turn', 'status': 'completed', 'items': []})
+        state = self.sessions.attach('t')
+        self.assertEqual([t['turnId'] for t in state['turns']], ['new-turn'])
+        self.assertFalse(state['turnsPagination']['hasLoadedOldest'])
+
+    def test_cached_tail_respects_byte_limit_without_loading_old_items(self):
+        self.items[0]['item']['text'] = 'a' * 4096
+        self.sessions.attach('t')
+        self.turns.append({'id': 'new-turn', 'status': 'inProgress', 'items': []})
+        with patch('bridge.clients.codex.desktop_host.MAX_LINE', 2048):
+            state = self.sessions.refresh('t')
+        self.assertEqual([t['turnId'] for t in state['turns']], ['new-turn'])
+        self.assertFalse(state['turnsPagination']['hasLoadedOldest'])
+        queries = [m['params']['turnId'] for m in self.writes if m.get('method') == 'thread/items/list']
+        self.assertEqual(queries, ['turn', 'new-turn'])
+
+    def test_cached_tail_status_comes_from_current_native_headers(self):
+        self.turns[0]['status'] = 'inProgress'
+        self.sessions.attach('t')
+        self.turns[0].update(status='completed', completedAt=123)
+        self.turns.append({'id': 'new-turn', 'status': 'inProgress', 'items': []})
+        state = self.sessions.refresh('t')
+        self.assertEqual(state['turns'][0]['status'], 'completed')
+        self.assertEqual(state['turns'][0]['turnCompletedAtMs'], 123000)
+
+    def test_same_status_delta_during_read_is_not_overwritten(self):
+        self.turns[0]['status'] = 'inProgress'
+        self.sessions.attach('t')
+        original = self.sessions.client.request
+        def request(method, params=None, *args, **kwargs):
+            result = original(method, params, *args, **kwargs)
+            if method == 'thread/read' and (params or {}).get('includeTurns'):
+                self.router.from_native({'method': 'item/agentMessage/delta', 'params': {
+                    'threadId': 't', 'turnId': 'turn', 'itemId': 'answer', 'delta': ' fresh'}})
+            return result
+        with patch.object(self.sessions.client, 'request', side_effect=request):
+            state = self.sessions.refresh('t')
+        self.assertEqual(state['turns'][0]['items'][0]['text'], 'history fresh')
+
+    def test_newer_turn_event_wins_over_paginated_read(self):
+        self.sessions.attach('t')
+        original = self.sessions.client.request
+        def request(method, params=None, *args, **kwargs):
+            result = original(method, params, *args, **kwargs)
+            if method == 'thread/read' and (params or {}).get('includeTurns'):
+                self.router.from_native({'method': 'turn/started', 'params': {'threadId': 't',
+                    'turn': {'id': 'event-turn', 'status': 'inProgress', 'items': []}}})
+            return result
+        with patch.object(self.sessions.client, 'request', side_effect=request):
+            state = self.sessions.refresh('t')
+        self.assertEqual([t['turnId'] for t in state['turns']], ['turn', 'event-turn'])
+        self.assertEqual(state['threadRuntimeStatus']['type'], 'active')
 
     def test_attach_with_an_oversized_older_turn_only_reads_current_turn(self):
         self.turns.insert(0, {'id': 'old', 'status': 'completed', 'items': []})
@@ -316,7 +455,7 @@ class HostedSessionTests(unittest.TestCase):
         self.assertFalse(any(m.get('method') in ('thread/revert', 'turn/start') for m in self.writes))
 
     def test_running_followup_preserves_images_and_file_context(self):
-        file_path = str(Path('fixture/spec.txt').absolute())
+        file_path = str(Path('/fixture/spec.txt').resolve())
         self.turns[0]['status'] = 'inProgress'
         self.sessions.attach('t')
         self.sessions.call('t', 'thread-follower-steer-turn', {
@@ -348,6 +487,41 @@ class HostedSessionTests(unittest.TestCase):
         self.assertFalse(follower.closed)
         self.assertIn('t', self.sessions.joined)
         self.assertEqual(follower.following, {'t'})
+
+    def test_streamed_new_turn_keeps_previously_observed_history(self):
+        self.sessions.attach('t')
+        for tid in ('second', 'third'):
+            self.turns.append({'id': tid, 'status': 'completed', 'items': []})
+            self.items.append({'turnId': tid, 'item': {'id': tid, 'type': 'agentMessage', 'text': tid}})
+            self.sessions.refresh('t')
+        self.sessions.native_event({'method': 'turn/started', 'params': {'threadId': 't',
+            'turn': {'id': 'fourth', 'status': 'inProgress', 'items': []}}})
+        self.sessions.native_event({'method': 'item/agentMessage/delta', 'params': {'threadId': 't',
+            'turnId': 'fourth', 'itemId': 'output', 'delta': 'new output'}})
+        state = self.sessions.states['t']
+        self.assertEqual([turn['turnId'] for turn in state['turns']], ['turn', 'second', 'third', 'fourth'])
+        self.assertEqual(state['turns'][0]['items'][0]['text'], 'history')
+        self.assertEqual(state['turns'][-1]['items'][0]['text'], 'new output')
+
+    def test_cached_truncated_items_cannot_claim_complete_history(self):
+        self.items = [{'turnId': 'turn', 'item': {'type': 'agentMessage', 'id': str(i), 'text': 'x'}}
+                      for i in range(101)]
+        self.sessions.attach('t')
+        self.turns.append({'id': 'next', 'status': 'inProgress', 'items': []})
+        state = self.sessions.refresh('t')
+        self.assertEqual([turn['turnId'] for turn in state['turns']], ['turn', 'next'])
+        self.assertFalse(state['turns'][0]['_itemsComplete'])
+        self.assertFalse(state['turnsPagination']['hasLoadedOldest'])
+
+    def test_streamed_turns_and_revision_evidence_remain_bounded(self):
+        self.sessions.attach('t')
+        for i in range(45):
+            self.sessions.native_event({'method': 'turn/started', 'params': {'threadId': 't',
+                'turn': {'id': 'stream-' + str(i), 'status': 'inProgress', 'items': []}}})
+        turns = self.sessions.states['t']['turns']
+        self.assertEqual([turn['turnId'] for turn in turns], ['stream-' + str(i) for i in range(5, 45)])
+        self.assertLessEqual(len(self.sessions.turn_revisions['t']), 40)
+        self.assertFalse(self.sessions.states['t']['turnsPagination']['hasLoadedOldest'])
 
     def test_streaming_state_is_bounded_and_deltas_remain_ordered(self):
         self.sessions.attach('t')
@@ -421,6 +595,37 @@ class HostedSessionTests(unittest.TestCase):
                             target='original-ide-owner')
                 self.assertEqual(legacy.request.call_args.args[0], 'thread-follower-interrupt-turn')
         self.assertFalse(any(m.get('method') in ('thread/resume', 'turn/start') for m in self.writes))
+
+    def test_quota_preflight_reads_fresh_native_failure_through_hosted_ipc(self):
+        from bridge.app.service import Bridge
+        from bridge.features.sessions.quota_continue import candidate
+        self.thread.update(modelProvider='openai', status={'type': 'systemError'})
+        self.turns = [{'id': 'quota-turn', 'status': 'failed', 'items': [],
+                       'error': {'codexErrorInfo': 'usageLimitExceeded'}}]
+        left, right = socket.socketpair()
+        self.addCleanup(left.close); self.addCleanup(right.close)
+        owner = 'desktop-runtime:fixture-generation'
+        follower = _Follower(right, owner, 'a' * 64, 'fixture-generation', self.sessions)
+        self.addCleanup(follower.close)
+        self.sessions.on_state = follower.snapshot
+        threading.Thread(target=follower.read, daemon=True).start()
+        bridge = Bridge.__new__(Bridge)
+        bridge.host = 'local'; bridge.codex_home = Path(self.temp.name)
+        bridge.ipc = SimpleNamespace(path='/fixture/old.sock', original_path='/fixture/old.sock', codex_home=self.temp.name)
+        bridge.accounts = Mock(); bridge.accounts.blockers.return_value = []
+        bridge.live = {}; bridge.remote_bridges = {}; bridge.lock = threading.RLock()
+        observed = []
+        def validate(state, actual_owner):
+            observed.append(candidate(SimpleNamespace(connected=True, runtime='desktop', origin='desktop',
+                state=state, owner=actual_owner)))
+        endpoint = {'path': '/fixture/host.sock', 'generation': 'fixture-generation', 'controlToken': 'a' * 64}
+        with patch('bridge.clients.codex.ipc.connect_stream', return_value=left), \
+                patch.object(runtime, 'hosted_endpoint', return_value=endpoint) as endpoint_lookup:
+            bridge.assert_desktop_idle(timeout=3, identifiers={'t'}, validate_state=validate, allow_quota_error=True)
+        self.assertTrue(endpoint_lookup.called)
+        self.assertTrue(observed)
+        self.assertTrue(all(row and row['turnId'] == 'quota-turn' and row['owner'] == owner for row in observed))
+        self.assertFalse(any(m.get('method') in ('thread/resume', 'thread/start', 'turn/start') for m in self.writes))
 
     def test_metadata_preserves_native_errors_and_explicit_not_sent_results(self):
         client = MetadataClient(self.temp.name)

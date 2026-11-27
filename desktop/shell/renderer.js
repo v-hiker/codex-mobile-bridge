@@ -1,6 +1,23 @@
 'use strict';
 const $=id=>document.getElementById(id),api=window.bridgeDesktop,t=BridgeI18n.t;
+if($('quota-continue-enabled')){
+  const toggle=new QuotaContinuationToggle({input:$('quota-continue-enabled'),error:$('quota-continue-error'),status:$('quota-continue-status'),
+    tasks:$('quota-continue-tasks'),exclude:(threadId,excluded)=>api.accounts({action:'quotaContinuation',threadId,excluded}),
+    read:()=>api.accounts({action:'quotaContinuation'}),write:enabled=>api.accounts({action:'quotaContinuation',enabled}),
+    visible:()=>!document.hidden});
+  window.addEventListener('focus',()=>toggle.refresh());
+  document.addEventListener('visibilitychange',()=>toggle.refresh());
+  setInterval(()=>toggle.refresh(),10000);toggle.refresh();
+}
 let connectionDraft=[],savedConnections='[]',lanDraft=[],savedLan='[]';
+let appearanceRevision=0,appearanceTheme='system';
+async function updateAppearance(theme){
+  if(typeof api.appearance!=='function')return;
+  const revision=++appearanceRevision,directory=snapshot?.dataDir;
+  try{const value=await api.appearance(theme);if(revision===appearanceRevision&&directory===snapshot?.dataDir){appearanceTheme=value.theme;$('appearance').value=value.theme;}}
+  catch(error){if(revision===appearanceRevision){$('appearance').value=appearanceTheme;feedback(error.message,true);}}
+}
+$('appearance').onchange=()=>updateAppearance($('appearance').value);
 let snapshot,dirty=false,loading=false,startingUntil=0,activeTab='overview',activeMaintenanceTab='general',savedFields={},feedbackKind='',lastFeedback;
 let networkAdaptationState,networkAdaptationBusy=false,networkAdaptationRevision=0,networkAdaptationError='';
 const defaultWebhookBodyTemplate=JSON.stringify({event:'{{event}}',title:'{{title}}',body:'{{body}}',session_name:'{{session_name}}',url:'{{url}}'},null,2);
@@ -268,7 +285,10 @@ function render(value,watchRevision=watchPanel.revision){
   $('login-startup-hint').textContent=t(value.loginStartup?.requiresApproval?'请在系统设置的登录项中允许此应用。':'开启后，登录电脑时自动启动网关。');
   if(snapshot&&(snapshot.runtime.instanceId!==value.runtime.instanceId||snapshot.dataDir!==value.dataDir)){resetPairing();connectionSetupState.clear();}
   if(snapshot&&snapshot.dataDir!==value.dataDir){hideWebhookUrl();webhookSavedFields=null;webhookCreating=false;webhookSelectedId='legacy';resetSecretFields();harnessPanel?.clear();if(activeTab==='accounts'&&!$('harness-panel').classList.contains('client-config-hidden'))harnessPanel?.refresh();watchPanel.clear();watchRevision=watchPanel.revision;devicesState=null;devicesDirty=false;$('device-list').replaceChildren();$('auto-blocks').replaceChildren();}
-  snapshot=value;const running=value.runtime.running;
+  const appearanceChanged=snapshot?.dataDir!==value.dataDir;
+  snapshot=value;if(appearanceChanged)void updateAppearance();const running=value.runtime.running;
+  $('credential-migration').hidden=!running||!Object.values(value.externalStatus||{}).some(row=>row.state==='credentials-required');
+  $('credential-migration').textContent=t('部分连接需要迁移旧凭据。请在连接设置中迁移后重启网关；其他可用连接不受影响。');
   if(!networkAdaptationBusy){if(typeof value.networkAdaptation?.enabled==='boolean')networkAdaptationError='';renderNetworkAdaptation(value.networkAdaptation??null);}
   if(running||value.runtime.portOccupied)startingUntil=0;
   const starting=Date.now()<startingUntil;
@@ -306,6 +326,12 @@ function render(value,watchRevision=watchPanel.revision){
   $('data-dir').textContent=value.dataDir;
   $('addresses').replaceChildren();
   prunePairing(value.urls);
+  const transferEntries=$('local-transfer-entries');
+  if(transferEntries){
+    transferEntries.replaceChildren();
+    for(const url of value.urls)if(!['127.0.0.1','localhost','[::1]'].includes(new URL(url).hostname))appendPairing(transferEntries,url,running,true);
+    if(!transferEntries.childElementCount)transferEntries.textContent=t('开启局域网或外网访问后，可扫码传输。');
+  }
   for(const url of value.urls){const card=document.createElement('div');card.className='address';const text=document.createElement('div'),label=document.createElement('small'),address=document.createElement('strong');const fixed=(value.preferences.connections||[]).some(c=>c.enabled&&url===c.publicUrl+'/');label.textContent=(fixed?t('固定 HTTPS · 请检测入口'):url.startsWith('https:')?t('临时外网 HTTPS'):url.includes('127.0.0.1')?t('此电脑'):t('局域网'))+(running?'':t(' · 网关未启动'));address.textContent=url;text.append(label,address);card.append(text);for(const [name,action] of [[t('复制'),()=>api.copy(url)],[t('打开'),()=>api.open(url)]]){const button=document.createElement('button');button.textContent=name;button.onclick=()=>action().catch(e=>feedback(e.message,true));card.append(button);}if(!['127.0.0.1','localhost','[::1]'].includes(new URL(url).hostname))appendPairing(card,url,running);$('addresses').append(card);}
   watchPanel.render(value,watchRevision);
   if(!dirty){
@@ -318,7 +344,7 @@ function render(value,watchRevision=watchPanel.revision){
     const fixed=connectionDraft.filter(c=>c.enabled).map(c=>c.publicUrl);
     input('origins',value.origins.filter(o=>!fixed.includes(o)).join('\n'));input('auth-mode',value.auth.mode);input('session-hours',value.auth.sessionHours??12);input('username',value.auth.username);$('revoke-bound-devices').checked=true;$('revoke-bound-devices-option').hidden=!$('password').value;
     $('mobile-enabled').checked=!!n.mobileEnabled;$('mobile-app-links').checked=!!n.mobileAppLinks;
-    $('ntfy-enabled').checked=n.enabled;input('ntfy-server',n.server);input('ntfy-topic',n.topic);input('click-base',n.clickBase);$('include-title').checked=n.includeTitle;
+    $('ntfy-enabled').checked=n.enabled;input('ntfy-server',n.server);input('ntfy-topic',n.topic);input('click-base',n.clickBase);$('include-title').checked=n.includeTitle;$('include-answer').checked=!!n.includeAnswer;
     $('bark-enabled').checked=!!n.barkEnabled;input('bark-server',n.barkServer||'https://api.day.app');
     $('pushplus-enabled').checked=!!n.pushplusEnabled;
     $('security-enabled').checked=n.securityEnabled!==false;$('address-enabled').checked=!!n.addressEnabled;input('address-name',n.addressName||'');
@@ -347,7 +373,7 @@ function render(value,watchRevision=watchPanel.revision){
 }
 let renderedSnapshot='',renderedDirty=false,renderedRevision=-1;
 async function refresh(force=false){if(loading||(document.hidden&&force!==true))return;loading=true;try{const revision=watchPanel.revision,networkRevision=networkAdaptationRevision,value=await api.snapshot();if(networkRevision!==networkAdaptationRevision)value.networkAdaptation=networkAdaptationState;const signature=JSON.stringify(value);if(signature!==renderedSnapshot||renderedDirty!==dirty||renderedRevision!==revision||startingUntil){render(value,revision);renderedSnapshot=signature;renderedDirty=dirty;renderedRevision=revision;}}catch(e){feedback(e.message,true);}finally{loading=false;}}
-function collect(){const rows=snapshot?.networkInterfaces||[],selected=rows.filter(row=>lanDraft.includes(row.id));return {...(snapshot?.loginStartup?.supported?{loginStartup:$('login-startup').checked}:{}),preferences:{autoStart:$('auto-start').checked,port:Number($('port').value),lan:$('lan').checked,lanInterfaces:$('lan-scope').value==='all'?null:[...lanDraft],lanAddresses:$('lan-scope').value==='all'?null:[...new Set(selected.flatMap(row=>row.addresses||[]))],localAccess:$('local-access').checked,connections:connectionDraft.map(row=>row.accessMode==='external'||row.accessMode==='nas'?{...row,publicUrl:normalizeExternalUrl(row.publicUrl||'')}:row),cloudflared:$('cloudflared').value.trim(),codexHome:$('codex-home').value.trim(),ipcPath:$('ipc-path').value.trim(),codexBin:$('codex-bin').value.trim()},auth:{sessionHours:Number($('session-hours').value),mode:$('auth-mode').value,username:$('username').value.trim(),password:submittedSecret('password'),revokeBoundDevices:$('revoke-bound-devices').checked},origins:$('origins').value.split('\n').map(s=>s.trim()).filter(Boolean),notifications:{mobileEnabled:$('mobile-enabled').checked,mobileAppLinks:$('mobile-app-links').checked,securityEnabled:$('security-enabled').checked,addressEnabled:$('address-enabled').checked,addressName:$('address-name').value.trim(),pushplusEnabled:$('pushplus-enabled').checked,pushplusToken:submittedSecret('pushplus-token'),clearPushplusToken:$('clear-pushplus-token').checked,enabled:$('ntfy-enabled').checked,server:$('ntfy-server').value.trim(),topic:$('ntfy-topic').value.trim(),token:submittedSecret('ntfy-token'),clearToken:$('clear-token').checked,barkEnabled:$('bark-enabled').checked,barkServer:$('bark-server').value.trim(),barkKey:submittedSecret('bark-key'),clearBarkKey:$('clear-bark-key').checked,clickBase:$('click-base').value.trim(),includeTitle:$('include-title').checked}};}
+function collect(){const rows=snapshot?.networkInterfaces||[],selected=rows.filter(row=>lanDraft.includes(row.id));return {...(snapshot?.loginStartup?.supported?{loginStartup:$('login-startup').checked}:{}),preferences:{autoStart:$('auto-start').checked,port:Number($('port').value),lan:$('lan').checked,lanInterfaces:$('lan-scope').value==='all'?null:[...lanDraft],lanAddresses:$('lan-scope').value==='all'?null:[...new Set(selected.flatMap(row=>row.addresses||[]))],localAccess:$('local-access').checked,connections:connectionDraft.map(row=>row.accessMode==='external'||row.accessMode==='nas'?{...row,publicUrl:normalizeExternalUrl(row.publicUrl||'')}:row),cloudflared:$('cloudflared').value.trim(),codexHome:$('codex-home').value.trim(),ipcPath:$('ipc-path').value.trim(),codexBin:$('codex-bin').value.trim()},auth:{sessionHours:Number($('session-hours').value),mode:$('auth-mode').value,username:$('username').value.trim(),password:submittedSecret('password'),revokeBoundDevices:$('revoke-bound-devices').checked},origins:$('origins').value.split('\n').map(s=>s.trim()).filter(Boolean),notifications:{mobileEnabled:$('mobile-enabled').checked,mobileAppLinks:$('mobile-app-links').checked,securityEnabled:$('security-enabled').checked,addressEnabled:$('address-enabled').checked,addressName:$('address-name').value.trim(),pushplusEnabled:$('pushplus-enabled').checked,pushplusToken:submittedSecret('pushplus-token'),clearPushplusToken:$('clear-pushplus-token').checked,enabled:$('ntfy-enabled').checked,server:$('ntfy-server').value.trim(),topic:$('ntfy-topic').value.trim(),token:submittedSecret('ntfy-token'),clearToken:$('clear-token').checked,barkEnabled:$('bark-enabled').checked,barkServer:$('bark-server').value.trim(),barkKey:submittedSecret('bark-key'),clearBarkKey:$('clear-bark-key').checked,clickBase:$('click-base').value.trim(),includeTitle:$('include-title').checked,includeAnswer:$('include-answer').checked}};}
 $('settings').onsubmit=async event=>{
   event.preventDefault();if(saving||busyActions.size)return;const invalid=[...$('settings').querySelectorAll('input,textarea,select')].find(node=>(gatewayFieldIds.has(node.id)||node.dataset.connectionField)&&!node.disabled&&!node.validity.valid&&(!node.closest('.connection-card')||connectionDraft.find(row=>row.id===node.closest('.connection-card').dataset.connectionId)?.enabled));if(invalid){focusField(invalid);feedback(invalid.validationMessage,true);return;}saving=true;$('save').disabled=true;const submitted=fieldValues(),submittedConnections=JSON.stringify(connectionDraft),submittedLan=JSON.stringify(lanDraft);
   try{
@@ -554,7 +580,8 @@ function renderUpdateVersions(){
   $('update-versions-state').classList.toggle('state-error',!!state.error);
   const selected=value.selected&&state.candidateId&&state.candidateId===value.candidateId&&!!updateVersionAsset();
   $('update-versions-download').disabled=busy||!selected;
-  $('update-versions-install').disabled=busy||!selected;
+  $('update-versions-install').disabled=busy||!selected||value.canInstall===false;
+  $('update-versions-install').hidden=value.canInstall===false;
   $('update-versions-install').textContent=t(value.manualInstall?(value.path?'打开安装包':'下载并打开安装包'):'切换版本并重启');
 }
 async function loadUpdateVersions(force=false){
@@ -597,14 +624,14 @@ function renderUpdate(){
   $('update-channel').value=updateChannel;
   $('update-channel').disabled=busy||value.state==='unsupported';
   $('update-version').textContent=t('当前版本：')+value.current+(value.version?' → '+value.version:'');
-  $('update-state').textContent=(value.selected&&value.state==='available'?t('已选择安装版本。'):value.message?t(value.message):t(value.skipped?'已跳过此版本。手动检查仍可更新。':value.selected&&!value.manualInstall&&value.state==='downloaded'?'所选安装包已校验并缓存，点击“切换版本并重启”完成安装。当前版本仍在运行。':value.manualRelease&&value.state==='available'?'此版本缺少签名的 Linux 更新包信息，请从官方发布页手动安装。':updateMessages[value.state]||''))+(value.path?'\n'+value.path:'');
+  $('update-state').textContent=(value.canInstall===false?t('Test 版支持下载和缓存管理，请手动安装所选版本。')+'\n':'')+(value.selected&&value.state==='available'?t('已选择安装版本。'):value.message?t(value.message):t(value.skipped?'已跳过此版本。手动检查仍可更新。':value.selected&&!value.manualInstall&&value.state==='downloaded'?'所选安装包已校验并缓存，点击“切换版本并重启”完成安装。当前版本仍在运行。':value.manualRelease&&value.state==='available'?'此版本缺少签名的 Linux 更新包信息，请从官方发布页手动安装。':updateMessages[value.state]||''))+(value.path?'\n'+value.path:'');
   $('update-badge').hidden=value.state!=='available'||!!value.selected;
   $('update-banner').hidden=value.state!=='available'||!!value.selected||activeTab==='advanced';
   $('update-banner').textContent=t('发现新版本，点击查看：')+(value.version||'');
   $('check-update').disabled=busy||value.state==='checking'||value.state==='unsupported';
   $('skip-update').hidden=value.state!=='available'||value.skipped===true||!!value.selected;
   $('skip-update').disabled=busy||value.state==='checking';
-  $('install-update').hidden=!value.version||value.selected||['current','unsupported','downloaded','installer-handoff','manual-release'].includes(value.state);
+  $('install-update').hidden=value.canInstall===false||!value.version||value.selected||['current','unsupported','downloaded','installer-handoff','manual-release'].includes(value.state);
   $('install-update').textContent=t(value.manualRelease?'打开官方发布页':value.manualInstall?'下载所选版本':value.intent==='return-stable'?'返回稳定版并重启':value.intent==='opt-in-preview'?'安装预览版并重启':'更新并重启');
   $('install-update').disabled=busy||value.state==='checking';
   $('update-notes').hidden=!value.notes;$('update-notes').textContent=value.notes||'';
@@ -656,6 +683,35 @@ $('install-update').onclick=async()=>{
 $('update-releases').onclick=()=>api.open('releases').catch(error=>feedback(error.message,true));
 
 let devicesState=null,devicesDirty=false,devicesBusy=false;
+function renderTransferTable(container,data){
+  if(!data.sessions.length){container.textContent=t('暂无会话传输记录。');return;}
+  const total=document.createElement('p');
+  total.className='transfer-total';
+  total.textContent=t('累计传输 {size}').replace('{size}',updateCacheSize(data.totalBytes));
+  if(Number.isFinite(data.totalReusedBytes))total.textContent+=' · '+t('缓存复用')+' '+updateCacheSize(data.totalReusedBytes);
+  const viewport=document.createElement('div'),table=document.createElement('table');
+  viewport.className='transfer-table-scroll';viewport.tabIndex=0;
+  viewport.setAttribute('role','region');viewport.setAttribute('aria-label',t('传输用量'));
+  const header=table.createTHead().insertRow();
+  for(const name of ['Agent 平台与连接方式','已同步数据量','聊天名称']){
+    const cell=document.createElement('th');cell.scope='col';cell.textContent=t(name);header.append(cell);
+  }
+  const providers={codex:'Codex',claude:'Claude',deepseek:'DeepSeek',zcode:'ZCode',antigravity:'Antigravity'};
+  const methods={app:'APP',cli:'CLI',ide:'IDE',code:'Code',cowork:'Cowork'};
+  const body=table.createTBody();
+  for(const item of data.sessions){
+    const row=body.insertRow(),source=row.insertCell(),bytes=row.insertCell(),chat=row.insertCell();
+    const family=item.provider.split(':')[0],method=methods[item.method];
+    let host=item.hostLabel||item.host;
+    if(host==='local')host=family==='codex'||item.hostLabel||method?t('此电脑'):'';
+    else if(host==='此电脑')host=t('此电脑');
+    source.textContent=[providers[family]||family,method,host].filter(Boolean).join(' · ');
+    source.title=source.textContent;bytes.textContent=updateCacheSize(item.bytes);
+    bytes.title=Number(item.bytes).toLocaleString(BridgeI18n.locale())+' B';
+    chat.textContent=item.title||item.sessionId;chat.title=chat.textContent;
+  }
+  viewport.append(table);container.replaceChildren(total,viewport);
+}
 function devicePolicy(){
   const lines=id=>$(id).value.split('\n').map(value=>value.trim()).filter(Boolean);
   return {allowlistEnabled:$('allowlist-enabled').checked,allowlist:lines('ip-allowlist'),blocklist:lines('ip-blocklist'),trustedProxies:lines('trusted-proxies')};
@@ -674,17 +730,21 @@ function renderDevices(value){
     const button=document.createElement('button');button.type='button';button.textContent=t('解除封禁并重置次数');button.disabled=devicesBusy;
     button.onclick=()=>{if(devicesDirty){feedback(t('请先保存 IP 规则。'),true);return;}return changeDevices({action:'unblock',ip:block.ip});};row.append(text,button);$('auto-blocks').append(row);
   }
+  if(!devicesBusy&&$('device-list').querySelector('.device-rename'))return;
   $('device-list').replaceChildren();
   if(!value.sessions.length)$('device-list').textContent=t('暂无有效登录记录。');
   const date=value=>new Date(value*1000).toLocaleString(BridgeI18n.locale());
   for(const session of value.sessions){
     const row=document.createElement('div');row.className='device-row';
-    const address=document.createElement('strong');address.textContent=session.ip;
-    const browser=document.createElement('p');browser.textContent=(session.trustedDevice?t('已绑定手机')+' · ':'')+(session.userAgent||t('未知浏览器'));
+    const address=document.createElement('strong');address.textContent=session.name?session.name+'（'+session.ip+'）':session.ip;
+    const browser=document.createElement('p'),info=session.clientInfo||{};
+    browser.textContent=[session.trustedDevice?t('已绑定手机'):'',info.kind==='app'?t('手机 App'):info.browser?[info.browser,info.browserVersion].filter(Boolean).join(' '):t('浏览器'),
+      info.model,[info.platform,info.osVersion].filter(Boolean).join(' '),
+      info.appVersion?'v'+info.appVersion+(info.build?' ('+info.build+')':''):''].filter(Boolean).join(' · ');
     const detail=document.createElement('p');detail.className='hint';
     detail.textContent=t(session.source==='proxy'?'代理 IP（未提供客户端地址）':session.source==='forwarded'?'经可信代理转发':'直连地址')+' · '+t('登录时间：')+date(session.created)+' · '+t('最近访问：')+date(session.lastSeen)+' · '+t('有效期至：')+(session.expires?date(session.expires):t('不自动过期'));
     const actions=document.createElement('div');actions.className='actions';
-    for(const [label,action] of [['撤销登录','revoke'],['封禁此 IP','block'],['加入白名单','allow']]){
+    for(const [label,action] of [['重命名','rename'],['撤销登录','revoke'],['封禁此 IP','block'],['加入白名单','allow']]){
       const button=document.createElement('button');button.type='button';button.textContent=t(action==='revoke'&&session.trustedDevice?'解除绑定':label);button.disabled=devicesBusy;
       button.onclick=()=>{
         if(action==='allow'){
@@ -692,11 +752,40 @@ function renderDevices(value){
           devicesDirty=true;$('device-feedback').textContent=t('白名单有未保存的修改。');return;
         }
         if(devicesDirty){feedback(t('请先保存 IP 规则。'),true);return;}
+        if(action==='rename'){
+          const existing=$('device-list').querySelector('.device-rename input');
+          if(existing){existing.focus();return;}
+          const form=document.createElement('form'),name=document.createElement('input'),save=document.createElement('button'),cancel=document.createElement('button');
+          form.className='device-rename';name.type='text';name.value=session.name||'';name.maxLength=80;
+          name.setAttribute('aria-label',t('设备名称'));name.placeholder=t('留空则显示 IP');
+          save.type='submit';save.textContent=t('保存名称');cancel.type='button';cancel.textContent=t('取消');
+          button.disabled=true;
+          cancel.onclick=()=>{form.remove();button.disabled=false;button.focus();};
+          form.onsubmit=event=>{
+            event.preventDefault();
+            if(devicesDirty){feedback(t('请先保存 IP 规则。'),true);return;}
+            const value=name.value;form.remove();return changeDevices({action:'rename',id:session.id,name:value});
+          };
+          form.append(name,save,cancel);actions.after(form);name.focus();name.select();return;
+        }
         return changeDevices({action,id:session.id});
       };
       actions.append(button);
     }
-    row.append(address,browser,detail,actions);$('device-list').append(row);
+    const usage=document.createElement('details'),summary=document.createElement('summary'),totals=document.createElement('div');
+    usage.className='device-transfer';
+    summary.textContent=t('传输用量');
+    usage.append(summary,totals);
+    usage.ontoggle=async()=>{
+      if(!usage.open)return;
+      totals.textContent=t('正在读取…');
+      try{
+        const data=await api.devices({action:'usage',id:session.id});
+        if(!usage.isConnected||!usage.open)return;
+        renderTransferTable(totals,data);
+      }catch(error){totals.textContent=error.message;}
+    };
+    row.append(address,browser,detail,actions,usage);$('device-list').append(row);
   }
 }
 async function loadDevices(){
@@ -713,7 +802,7 @@ async function changeDevices(payload){
   try{
     const value=await api.devices(payload);
     devicesDirty=false;renderDevices(value);
-    $('device-feedback').textContent=t(payload.action==='save'?'IP 规则已保存并生效。':payload.action==='block'?'IP 已封禁，关联登录已撤销。':payload.action==='unblock'?'IP 已解封，剩余尝试次数已重置。':'登录已撤销。');
+    $('device-feedback').textContent=t(payload.action==='save'?'IP 规则已保存并生效。':payload.action==='block'?'IP 已封禁，关联登录已撤销。':payload.action==='unblock'?'IP 已解封，剩余尝试次数已重置。':payload.action==='rename'?'设备名称已保存。':'登录已撤销。');
   }catch(error){feedback(error.message,true);}
   finally{devicesBusy=false;busyActions.delete('devices');$('device-policy').inert=false;$('refresh-devices').disabled=false;if(devicesState)renderDevices(devicesState);}
 }

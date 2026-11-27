@@ -290,7 +290,7 @@
     const menu = document.createElement('div');
     menu.className = 'cmb-select-menu';
     menu.setAttribute('role', 'listbox');
-    if (select.id === 'language') menu.classList.add('cmb-select-menu-compact');
+    if (select.id === 'language' || select.id === 'appearance') menu.classList.add('cmb-select-menu-compact');
     populateMenu(select, menu);
     document.body.append(menu);
     positionMenu(state.trigger, menu);
@@ -315,7 +315,7 @@
     const wrap = document.createElement('div');
     wrap.className = 'cmb-select';
     wrap.dataset.cmbSelect = select.id || '';
-    if (select.id === 'language') wrap.classList.add('cmb-select-compact');
+    if (select.id === 'language' || select.id === 'appearance') wrap.classList.add('cmb-select-compact');
 
     const trigger = document.createElement('button');
     trigger.type = 'button';

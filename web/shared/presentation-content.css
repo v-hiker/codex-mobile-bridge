@@ -6,13 +6,16 @@
 .notice .recovery-actions .plain{padding:6px 12px;min-height:32px;border-radius:999px;border:1px solid color-mix(in srgb,var(--warning-text) 24%,transparent);font-size:12px;font-weight:600;color:var(--warning-text)}
 .notice #reconnect{background:color-mix(in srgb,var(--warning-text) 13%,transparent)}
 .notice .recovery-actions .plain:hover{background:color-mix(in srgb,var(--warning-text) 20%,transparent)}
+.notice.chat-notice-dismissible{position:relative;padding-right:44px}
+.notice[data-notice-dismissed="true"]{display:none!important}
+.notice .chat-notice-close{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:32px;height:32px;padding:0;border:0;background:none;font-size:20px;line-height:1}
 .timeline{padding:20px max(24px,calc((100% - 760px)/2))}
 .message{font-size:var(--message-size);line-height:var(--message-leading);margin:var(--message-gap) 0}
 .timeline-row{margin-bottom:var(--message-gap)}
 .message.user{width:fit-content;max-width:min(86%,640px);margin-left:auto;background:var(--user);border:1px solid color-mix(in srgb,var(--line) 85%,transparent);padding:11px 16px;border-radius:18px 18px 5px 18px;box-shadow:var(--shadow-xs)}
 .message.user .who{display:none}
 .message .who{font-size:11px;font-weight:600;letter-spacing:.04em;margin-bottom:8px;color:var(--muted);font-variant-numeric:tabular-nums}
-.message.assistant{padding:0}
+.message.assistant{padding:0;color:var(--text)}
 .message pre,.activity pre{background:var(--code);border-color:var(--line);font-size:var(--code-size)}
 .markdown-body code{background:var(--code)}
 .markdown-body pre code{background:none}
@@ -106,3 +109,8 @@ dialog>.toast{top:14px}
 .welcome-primary svg,.welcome-secondary svg{width:14px;height:14px;flex:none}
 .welcome-kbd{display:inline-flex;align-items:center;margin-left:2px;padding:1px 6px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--muted);font:500 11px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace}
 @media(max-width:720px){.welcome-kbd{display:none}}
+.chat-turn-outcome:not(.message){color:var(--muted);font-size:12px;line-height:1.6;margin:4px 0 18px}
+.chat-turn-locator{position:sticky;inset-block-start:0;z-index:1;background:var(--page)}
+.chat-turn-locator+.timeline-row,.chat-turn-locator+.chat-process-page[hidden]+.timeline-row{scroll-margin-block-start:36px}
+.chat-process-page{display:block;margin:4px 0}
+.chat-process-page[hidden]{display:none}

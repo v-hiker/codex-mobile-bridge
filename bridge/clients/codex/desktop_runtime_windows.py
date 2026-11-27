@@ -16,7 +16,7 @@ from bridge.clients.local_rpc import LocalService, LocalRequestNotSent, read_pac
 from .app_server import (AppServerError, AppServerUnavailable, AppServerUnknownResult,
                          AppServerRequestNotSent, response_result)
 from .desktop_runtime import (VERSION, _read, _write, directory, exclusive_lock,
-                              process_identity, require_inactive, server_arguments)
+                              process_identity, require_inactive, server_arguments, verify_record)
 from .desktop_runtime_host import _forward_input
 from .desktop_stdio import DesktopStdio, MAX_LINE, METADATA_METHODS
 
@@ -166,9 +166,7 @@ def run_cli_passthrough(arguments):
 def _verify(record):
     if _read(directory(record['home']) / 'active.json') != record:
         raise ValueError('Codex 原生连接记录已变化')
-    for key in ('app', 'adapter', 'runtime'):
-        if process_identity(record[key]['pid']) != record[key]:
-            raise ValueError('Codex 原生连接进程已变化')
+    verify_record(record)
 
 
 class MetadataClient:
@@ -207,7 +205,56 @@ class MetadataClient:
         self.closed = True  # The App, not this Bridge connection, owns native stdin.
 
 
-def run(configuration, arguments):
+def ordinary_run(configuration, arguments):
+    """Validate the immutable dispatcher and the caller before sharing stdio."""
+    from bridge.platforms.windows import codex_launch
+    from .desktop_runtime import initialization_lock
+    path = Path(configuration).resolve()
+    config = _read(path)
+    home = Path(config['home']).resolve()
+    if path != directory(home)/'settings.json' or config.get('version') != VERSION:
+        raise ValueError('原生普通启动配置不匹配')
+    record = _read(directory(home)/'ordinary-launch.json')
+    dispatcher = process_identity(os.getppid())
+    if not codex_launch.owned_launcher(dispatcher['image'], directory(home)):
+        raise ValueError('普通启动分派器不匹配')
+    import hashlib
+    helper = Path(dispatcher['image'])
+    if hashlib.sha256(helper.read_bytes()).hexdigest() != helper.parent.name:
+        raise ValueError('普通启动分派器身份已变化')
+    parent = process_identity(dispatcher['parent'])
+    cli = codex_launch.bundled_cli(parent['image'], record.get('cliRelative'))
+    selected_app = codex_launch.selected_application(parent['image'], record)
+    if selected_app and record.get('cliRelative') is None:
+        from bridge.platforms.windows.discovery import cached_runtime_candidates
+        candidates=cached_runtime_candidates(record['cli'])
+        cli=str(candidates[0].resolve()) if candidates else record['cli']
+    current_home = Path(os.environ.get('CODEX_HOME') or Path(os.environ['USERPROFILE'])/'.codex').resolve()
+    sqlite_home = Path(os.environ.get('CODEX_SQLITE_HOME') or current_home).resolve()
+    if current_home != home or sqlite_home != home or not selected_app:
+        env = {k:v for k,v in os.environ.items() if k != 'CMB_CODEX_DESKTOP_CONFIGURATION'}
+        return subprocess.call([cli, *arguments], env=env, stdin=sys.stdin, stdout=sys.stdout,
+                               stderr=sys.stderr, creationflags=subprocess.CREATE_NO_WINDOW)
+    from .desktop_runtime import desktop_owner
+    desktop_owner(parent, parent['image'])
+    if (config['application'] != parent['image'] or config['cli'] != cli or
+            Path(config['launcher']).resolve() != Path(sys.executable).resolve()):
+        # Store updates move the install directory. Match the registered AUMID,
+        # not a version path, and never replace a still-running previous writer.
+        with initialization_lock(home):
+            active = directory(home)/'active.json'
+            if active.exists():
+                require_inactive(_read(active))
+            updated = {**config, 'application': parent['image'], 'cli': cli,
+                       'launcher': str(Path(sys.executable).resolve())}
+            _write(path, json.dumps(updated))
+    if process_identity(dispatcher['pid']) != dispatcher or process_identity(parent['pid']) != parent:
+        raise ValueError('普通启动进程已变化')
+    os.environ['CODEX_HOME'] = str(home)
+    return run(configuration, arguments, dispatcher=dispatcher)
+
+
+def run(configuration, arguments, *, dispatcher=None):
     from bridge.platforms.windows import local_service as native
     import msvcrt
     for stream in (sys.stdin, sys.stdout):
@@ -226,9 +273,12 @@ def run(configuration, arguments):
             or (env.get('CODEX_SQLITE_HOME') and not _same_path(env['CODEX_SQLITE_HOME'], home))):
         return _passthrough_call(cli, arguments, env)
     from .desktop_runtime import desktop_owner
+    parent = process_identity(dispatcher['parent'] if dispatcher else os.getppid())
     try:
-        app, host = desktop_owner(process_identity(os.getppid()), config['application'])
+        app, host = desktop_owner(parent, config['application'])
     except (OSError, ValueError):
+        if dispatcher is not None:
+            raise
         return _passthrough_call(cli, arguments, env)
     first = sys.stdin.buffer.readline(MAX_LINE + 2)
     if len(first) > MAX_LINE + 1:
@@ -243,11 +293,11 @@ def run(configuration, arguments):
     with exclusive_lock(home, 'runtime'):
         if host is not None:
             from .desktop_host import serve
-            return serve(config, app, host, arguments, initialize, env)
-        return _serve(config, app, arguments, initialize, env, native)
+            return serve(config, app, host, arguments, initialize, env, dispatcher=dispatcher)
+        return _serve(config, app, arguments, initialize, env, native, dispatcher=dispatcher)
 
 
-def _serve(config, app, arguments, initialize, env, native):
+def _serve(config, app, arguments, initialize, env, native, *, dispatcher=None):
     root = directory(config['home'])
     active = root / 'active.json'
     if active.exists():
@@ -255,6 +305,8 @@ def _serve(config, app, arguments, initialize, env, native):
     generation = str(uuid.uuid4())
     record = {'version': VERSION, 'ready': False, 'home': config['home'], 'cli': config['cli'],
               'app': app, 'adapter': process_identity(os.getpid()), 'runtime': None, 'generation': generation}
+    if dispatcher is not None:
+        record['dispatcher'] = dispatcher
     _write(active, json.dumps(record))
     child = None
     listener = None

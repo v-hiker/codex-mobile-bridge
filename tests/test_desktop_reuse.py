@@ -27,13 +27,17 @@ class DesktopReuseTests(unittest.TestCase):
     def test_successful_platform_can_be_reused_from_cancelled_overall_run(self):
         self.validate(['tests/test_bridge.py', 'tests/test_desktop_idle.py', 'tests/test_hosted_desktop.py'])
 
+    def test_windows_path_and_utf8_fixture_repairs_preserve_product_packages(self):
+        self.validate(['tests/test_antigravity_reading.py', 'tests/test_retained_index_history.py',
+                       'tests/test_history_control_separation.py', 'tests/test_progressive_loading.py'])
+
     def test_workflow_scopes_rebuild_and_keeps_default_all(self):
         workflow = (ROOT/'.github/workflows/desktop.yml').read_text()
-        self.assertIn('options: [all, intel, mac-windows-reuse, windows-reuse]', workflow)
+        self.assertIn('options: [all, intel, mac-windows-reuse, windows-reuse, mac-arm-reuse]', workflow)
         self.assertIn('default: all', workflow)
         self.assertIn('jobs?filter=all', (ROOT/'scripts/reuse-desktop-artifacts.py').read_text())
         self.assertIn('Verify exact selected rebuild source', workflow)
-        self.assertEqual(set(reuse.PLATFORMS), {'desktop-macOS-arm64', 'desktop-macOS-x64', 'desktop-Linux-x64', 'desktop-Linux-arm64'})
+        self.assertEqual(set(reuse.PLATFORMS), {'desktop-macOS-arm64', 'desktop-macOS-x64', 'desktop-Linux-x64', 'desktop-Linux-arm64', 'desktop-Windows-x64'})
         self.assertIn('inputs.reuse_mac_arm_source_ref', workflow)
         self.assertIn('name: reuse-provenance-${{ matrix.artifact }}', workflow)
 

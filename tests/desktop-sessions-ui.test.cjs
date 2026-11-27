@@ -44,9 +44,9 @@ function fixture({storage=new Map(),sessionStore=new Map()}={}){
  }
  document={body:new Node('body'),documentElement:new Node('html'),hidden:false,activeElement:null,getSelection:()=>null,createElement:tag=>new Node(tag),createElementNS:(_,tag)=>new Node(tag),createTextNode:text=>{const n=new Node('#text');n.textContent=text;return n;},querySelectorAll:s=>document.body.querySelectorAll(s),querySelector:s=>document.body.querySelector(s),getElementById:id=>document.body.querySelector('#'+id),addEventListener:(type,fn)=>listeners[type]=fn,dispatchEvent:event=>listeners[event.type]?.(event)};
  const root=new Node('div');root.className='app';document.body.append(root);const select=new Node('select'),calls=[],notices=[];let uploadHandler=async()=>({ok:true,status:200,json:async()=>({image:true,size:16,name:'image.png'})}),handler=async(url,body)=>body?{status:'accepted'}:url.includes('/detail')?{session:{id:'a',title:'Chat',model:'model-a',effort:'high',status:'idle',capabilities:{send:true,queue:true,steer:true}},messages:[]}:url.includes('/workspace')?{entries:[],total:0,project:'/project'}:{sessions:[]};
- const context=vm.createContext({ComposerToolbar:class{addChoices(){return [];}requestSync(){}resizeInput(){}actionMode(){return this.sendState?.().running?this.controls.sendMode.value:'send';}constructor({input,controls,sendState}){this.input=input;this.controls=controls;this.sendState=sendState;}sync(){}setCollapsed(value){this.input.closest('.ds-composer-body').hidden=value;}anchor(id){return this.controls[id];}},document,window:{addEventListener:(type,fn)=>listeners['window:'+type]=fn,dispatchEvent:event=>listeners['window:'+event.type]?.(event)},navigator:{},location:{pathname:'/'},history:{replaceState(){}},localStorage:{get length(){return storage.size;},key:i=>[...storage.keys()][i],getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},sessionStorage:{get length(){return sessionStore.size;},key:i=>[...sessionStore.keys()][i],getItem:k=>sessionStore.get(k),setItem:(k,v)=>sessionStore.set(k,v),removeItem:k=>sessionStore.delete(k)},crypto:{getRandomValues:array=>webcrypto.getRandomValues(array)},Uint8Array,TextEncoder,Option:class extends Node{constructor(text,value){super('option');this.textContent=text;this.value=value;this.setAttribute('value',value);}},ResizeObserver:class{observe(){}},MutationObserver:class{observe(){}},AbortController,URLSearchParams,requestAnimationFrame:fn=>fn(),cancelAnimationFrame(){},getComputedStyle:()=>({getPropertyValue:()=>8}),setTimeout(){return 1;},clearTimeout(){},fetch:async(url,options)=>{calls.push({url,upload:options});return uploadHandler(url,options);},renderMarkdown:(node,text)=>node.textContent=text,CustomEvent:class{constructor(type,options){this.type=type;Object.assign(this,options);}}});
+ const context=vm.createContext({ComposerToolbar:class{addChoices(){return [];}requestSync(){}resizeInput(){}actionMode(){return this.sendState?.().running?this.controls.sendMode.value:'send';}constructor({input,controls,sendState}){this.input=input;this.controls=controls;this.sendState=sendState;}sync(){}setCollapsed(value){this.input.closest('.ds-composer-body').hidden=value;}anchor(id){return this.controls[id];}},document,window:{addEventListener:(type,fn)=>listeners['window:'+type]=fn,removeEventListener:(type,fn)=>{if(listeners['window:'+type]===fn)delete listeners['window:'+type];},dispatchEvent:event=>listeners['window:'+event.type]?.(event)},navigator:{},location:{pathname:'/'},history:{replaceState(){}},localStorage:{get length(){return storage.size;},key:i=>[...storage.keys()][i],getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},sessionStorage:{get length(){return sessionStore.size;},key:i=>[...sessionStore.keys()][i],getItem:k=>sessionStore.get(k),setItem:(k,v)=>sessionStore.set(k,v),removeItem:k=>sessionStore.delete(k)},crypto:{getRandomValues:array=>webcrypto.getRandomValues(array)},Uint8Array,TextEncoder,Option:class extends Node{constructor(text,value){super('option');this.textContent=text;this.value=value;this.setAttribute('value',value);}},ResizeObserver:class{observe(){}},MutationObserver:class{observe(){}},AbortController,URLSearchParams,requestAnimationFrame:fn=>fn(),cancelAnimationFrame(){},getComputedStyle:()=>({getPropertyValue:()=>8}),setTimeout(){return 1;},clearTimeout(){},fetch:async(url,options)=>{calls.push({url,upload:options});return uploadHandler(url,options);},renderMarkdown:(node,text)=>node.textContent=text,CustomEvent:class{constructor(type,options){this.type=type;Object.assign(this,options);}}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/shell/app.js'),'utf8').match(/^function uuid\(\).*$/m)[0],context);
- for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/composer-drafts.js','web/features/chat/composer-quotes.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/clients/client-lifecycle.js','web/features/chat/message-actions.js','web/shared/composer-icons.js','web/features/chat/permissions.js','web/features/chat/modes.js','web/features/workspace/workbench.js','web/features/chat/list-sync.js','web/shared/creation-model-picker.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
+ for(const file of ['web/layouts/viewport.js','web/features/chat/activity.js','web/features/chat/composer-drafts.js','web/features/chat/composer-quotes.js','web/features/chat/attachments.js','web/shared/i18n.js','web/features/accounts/quota-display.js','web/features/clients/client-lifecycle.js','web/features/chat/message-actions.js','web/shared/composer-icons.js','web/features/chat/permissions.js','web/features/chat/modes.js','web/features/workspace/workbench.js','web/features/chat/list-sync.js','web/shared/creation-model-picker.js','web/features/clients/desktop-sessions.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),context);
  const View=vm.runInContext('DesktopSessionsView',context),view=new View({root,select,request:(url,body,signal)=>{calls.push({url,body});return handler(url,body,signal);},notify:text=>notices.push(text),onSelect(){},csrf:()=>'csrf-test',onUnauthorized(){}});
  return {view,root,document,calls,notices,storage,sessionStore,setHandler:fn=>handler=fn,setUploadHandler:fn=>uploadHandler=fn,run:s=>vm.runInContext(s,context),text:n=>n.textContent};
 }
@@ -61,6 +61,17 @@ function hostPages(ui,handler){
    entries:value.entries.map(row=>({...row,path:row.path.startsWith('/')?row.path:value.project+'/'+row.path}))};
  });
 }
+test('online desktop sync keeps writable state without showing offline reader status',async()=>{
+ const ui=await opened();
+ ui.run(`window.offlineNotices=[];window.OfflineChatReader={enabled:false,showStatus:(...args)=>window.offlineNotices.push(args)};
+ globalThis.ChatTimelineSync=class {constructor({host}){this.host=host;}updates(){}async start(){this.host.renderSync({rows:[],files:[],cached:false,value:{session:{id:'a',title:'Online',status:'idle',capabilities:{send:true}},connected:true,messages:[]}});}};`);
+ await ui.view.startHistorySync({},null,()=>true,ui.view.generation,ui.view.detailRevision);
+ assert.equal(ui.run('window.offlineNotices.length'),0);
+ assert.equal(ui.view.canMutate(),true);
+ ui.run('window.OfflineChatReader.enabled=true');
+ await ui.view.startHistorySync({},null,()=>true,ui.view.generation,ui.view.detailRevision);
+ assert.equal(ui.run('window.offlineNotices.length'),1);
+});
 test('persistent history is display only and cannot override fresh disconnected history',async()=>{
  const ui=fixture(),view=ui.view;await view.choose('claude');view.listCacheIdentity='auth-a';view.listCacheHost='machine-a';
  ui.run('window.historyReads=[];window.historyWrites=[];window.BridgeChatHistoryCache={read:scope=>new Promise(resolve=>window.historyReads.push({scope,resolve})),write:(...args)=>window.historyWrites.push(args)}');
@@ -87,6 +98,36 @@ test('fresh empty desktop history replaces persisted content and account changes
  await view.accountChanged('claude');assert.deepEqual(JSON.parse(ui.run('window.historyClears[0]')),['auth','host','claude']);
 });
 async function opened(){const ui=fixture();await ui.view.choose('claude');await ui.view.open('a');return ui;}
+test('native revert defaults to conversation only and file rollback requires an explicit check',async()=>{
+ const ui=await opened(),view=ui.view,writes=[];
+ const message={id:'user',role:'user',text:'Original request',revertStepIndex:2,revertMessageId:'a'.repeat(64)};
+ view.applyDetail({session:{id:'a',title:'A'},capabilities:{revert:true},messages:[message]});
+ view.mutate=async(...args)=>{writes.push(args);return {status:'accepted'};};
+ for(const includeFiles of [false,true]){
+  view.input.value='Keep existing draft';view.revert(message);
+  const dialog=ui.document.body.querySelector('dialog'),check=dialog.querySelector('input');
+  assert.equal(!!check.checked,false);check.checked=includeFiles;
+  await dialog.querySelector('form').onsubmit({preventDefault(){}});
+  assert.equal(writes.at(-1)[1].conversationOnly,!includeFiles);
+  assert.equal(writes.at(-1)[1].messageId,message.revertMessageId);
+  assert.equal(view.input.value,'Keep existing draft');
+ }
+ assert.equal(writes.length,2);
+});
+test('native revert rejects a stale dialog and does not restore text into a later chat',async()=>{
+ const ui=await opened(),view=ui.view,writes=[];
+ const message={id:'user',role:'user',text:'Old request',revertStepIndex:2,revertMessageId:'a'.repeat(64)};
+ const detail={session:{id:'a',title:'A'},capabilities:{revert:true},messages:[message]};
+ view.applyDetail(detail);view.mutate=async(...args)=>{writes.push(args);return {};};
+ view.revert(message);let form=ui.document.body.querySelector('dialog').querySelector('form');
+ view.prepareChat('b');await form.onsubmit({preventDefault(){}});assert.equal(writes.length,0);
+ view.prepareChat('a');view.applyDetail(detail);let finish;
+ view.mutate=(...args)=>{writes.push(args);return new Promise(resolve=>finish=resolve);};
+ view.revert(message);form=ui.document.body.querySelector('dialog').querySelector('form');
+ const pending=form.onsubmit({preventDefault(){}});view.prepareChat('b');view.input.value='';
+ finish({status:'accepted'});await pending;
+ assert.equal(writes.length,1);assert.equal(view.input.value,'');assert.equal(view.sid,'b');
+});
 test('native details expose each intermediate row without process-directory requests',async()=>{
  const ui=await opened(),view=ui.view;const rows=[
   {id:'input',role:'user',text:'Request'},
@@ -415,13 +456,13 @@ test('Claude recent list compares Desktop milliseconds and CLI seconds as the sa
  const ui=fixture();await ui.view.choose('claude');
  const desktopOlder=Date.UTC(2026,9,14,12),cliNewest=Date.UTC(2026,9,16,12),desktopMiddle=Date.UTC(2026,9,15,12);
  ui.view.rows=[{id:'code',title:'Desktop Code',backend:'code',cwd:'/same',updatedAt:desktopOlder},
-  {id:'cli',title:'CLI latest',backend:'cli',cwd:'/same',updatedAt:cliNewest/1000},
+  {id:'cli',title:'CLI latest',backend:'cli',cwd:'/same',updatedAt:cliNewest/1000,lastUserInputAt:desktopOlder},
   {id:'cowork',title:'Desktop Cowork',backend:'cowork',cwd:'/same',updatedAt:desktopMiddle}];
  ui.view.renderList();
  const ids=()=>ui.view.rowsRoot.querySelectorAll('.session').map(row=>row.dataset.id);
  assert.deepEqual(ids(),['cli','cowork','code']);
  assert.equal(ui.view.rowsRoot.querySelector('.session').querySelector('time').textContent,
-  new Date(cliNewest).toLocaleDateString('zh-CN',{month:'numeric',day:'numeric'}));
+  [new Date(desktopOlder).getHours(),new Date(desktopOlder).getMinutes()].map(n=>String(n).padStart(2,'0')).join(':')+' 10/14');
  ui.view.surface.value='cli';ui.view.surface.onchange();assert.deepEqual(ids(),['cli']);
  ui.view.surface.value='all';ui.view.surface.onchange();ui.view.search.value='Desktop';ui.view.renderList();assert.deepEqual(ids(),['cowork','code']);
  ui.view.search.value='';ui.view.listMode.value='project';ui.view.renderList();assert.deepEqual(ids(),['cli','cowork','code']);
@@ -1536,6 +1577,46 @@ test('only selecting a ZCode row continues its verified private session',async()
  assert.deepEqual(actions,['resume']);
 });
 
+test('opening a fresh DSH chat continues it once while list and background reads stay passive',async()=>{
+ const ui=fixture(),view=ui.view;let connected=false;
+ const detail=()=>({session:{id:'cold',title:'DSH chat',status:'idle',connectionState:connected?'ready':'detached',controlScope:'session'},
+  capabilities:{resume:!connected,send:connected},messages:[{id:'history',role:'assistant',text:'Saved DSH reply'}]});
+ view.setClientStates([{id:'deepseek',enabled:true,connected:true,historyAvailable:true}]);
+ ui.setHandler(async(url,body)=>{
+  if(body){assert.match(url,/\/resume$/);connected=true;return {status:'ready'};}
+  return url.includes('/detail')?detail():{sessions:[detail().session],connected:true};
+ });
+ await view.choose('deepseek');assert.equal(ui.calls.filter(row=>row.body).length,0);
+ await view.open('cold');await new Promise(setImmediate);assert.equal(ui.calls.filter(row=>row.body).length,1);assert.equal(view.canMutate(),true);
+ await view.refresh();assert.equal(ui.calls.filter(row=>row.body).length,1);
+ assert.match(view.messages.textContent,/Saved DSH reply/);
+});
+
+for(const condition of ['cached','offline','hidden','disabled','stale','background'])test(`DSH automatic continuation rejects ${condition} detail`,async()=>{
+ const ui=fixture(),view=ui.view;view.provider='deepseek';view.sid='cold';view.showSelection(true);
+ view.clientStates=[{id:'deepseek',enabled:condition!=='disabled',connected:true,historyAvailable:true}];
+ view.loadNotificationPolicy=()=>{};
+ view.detail=async()=>{
+  view.applyDetail({session:{id:'cold',title:'Cold',connectionState:'detached'},capabilities:{resume:true},messages:[]},condition==='cached');
+  if(condition==='stale')view.sid='new-chat';
+ };
+ if(condition==='offline')ui.run('window.OfflineChatReader={enabled:true}');
+ if(condition==='hidden')ui.document.hidden=true;
+ if(condition==='background')ui.run('window.BridgeChatForeground=false');
+ await view.open('cold');assert.equal(ui.calls.filter(row=>row.body).length,0);
+});
+
+test('a failed DSH automatic continuation is not repeated by later detail polling',async()=>{
+ const ui=fixture(),view=ui.view;
+ view.setClientStates([{id:'deepseek',enabled:true,connected:true,historyAvailable:true}]);
+ const detail={session:{id:'cold',title:'Cold',connectionState:'detached'},capabilities:{resume:true},messages:[]};
+ ui.setHandler(async(url,body)=>{if(body)throw Error('Original session unavailable');return url.includes('/detail')?detail:{sessions:[detail.session],connected:true};});
+ await view.choose('deepseek');await view.open('cold');await new Promise(setImmediate);
+ assert.equal(ui.calls.filter(row=>row.body).length,1);
+ await view.refresh();assert.equal(ui.calls.filter(row=>row.body).length,1);
+ assert.equal(view.canResume(),true);assert.match(view.error.textContent,/Original session unavailable/);
+});
+
 async function progressiveChat(options){
  const ui=fixture(options),view=ui.view,session={id:'sess-cold',title:'Cold',status:'idle',cwd:'/p',requests:[]};
  const detail=ready=>({session:{...session,controlScope:'session',connectionState:ready?'ready':'detached'},
@@ -1827,17 +1908,17 @@ test('model picker renders quota badges and structured usageSummary without alte
  assert.equal(badges.length,2);
  assert.equal(badges[0].classList.contains('badge-warning'),true);
  assert.equal(badges[1].classList.contains('badge-exhausted'),true);
- const card=dialog.querySelector('.ds-usage-card');
+ const card=dialog.querySelector('.quota-summary');
  assert.ok(card);
- assert.equal(card.querySelector('.ds-usage-title').textContent,'Google AI Pro');
- assert.equal(card.querySelector('.ds-usage-row').querySelector('.ds-usage-name').textContent,'Low Model');
- assert.equal(card.querySelector('.ds-usage-credits').textContent,'可用 Prompt 点数: 120 · Flow 点数: 45');
+ assert.equal(card.querySelector('.quota-tier').textContent,'Google AI Pro');
+ assert.equal(card.querySelector('.quota-legacy'),null);
+ assert.equal(card.querySelector('.quota-credits').textContent,'可用 Prompt 点数: 120 · Flow 点数: 45');
  dialog.close();
 
  ui.setHandler(async()=>({models:[{id:'m-plain',name:'Plain',efforts:[]}],currentModel:'m-plain',notice:'plain notice',capabilities:{models:true,effort:false}}));
  await ui.view.models();
  const plainDialog=ui.view.modelDialog;
- assert.equal(plainDialog.querySelector('.ds-usage-card'),null);
+ assert.equal(plainDialog.querySelector('.quota-summary'),null);
  assert.equal(plainDialog.querySelector('.muted').textContent,'plain notice');
  plainDialog.close();
 });
@@ -2121,6 +2202,26 @@ async function stopConcurrencyFixture({status='idle',stop=true}={}){
  ui.setHandler((url,body)=>new Promise(resolve=>{receipts[new URL(url,'http://fixture').pathname.split('/').at(-1)]=resolve;}));
  return {ui,view,receipts};
 }
+for(const status of ['unknown','uncertain'])test('first '+status+' send reveals management without another submission',async()=>{
+ const {ui,view,receipts}=await stopConcurrencyFixture();view.manageMessages.hidden=true;
+ const sending=view.mutate('send',{text:'possibly delivered'});
+ receipts.send({status,message:'Check original chat'});await sending;
+ assert.equal(view.manageMessages.hidden,false);
+ assert.equal(view.pending.size,1,'unconfirmed operation ID must remain available');
+ assert.equal(ui.calls.filter(c=>c.body&&c.url.includes('/send')).length,1);
+});
+for(const field of ['session','provider','generation','gateway','account'])test('late uncertain send leaves management untouched after changing '+field,async()=>{
+ const {view,receipts}=await stopConcurrencyFixture();
+ const sending=view.mutate('send',{text:'old task'});
+ if(field==='session')view.prepareChat('b');
+ if(field==='provider'){await view.choose('deepseek',{loadList:false});view.prepareChat('a');}
+ if(field==='generation')view.generation++;
+ if(field==='gateway')view.bindDraftGateway('gateway-b');
+ if(field==='account')view.draftScope={...view.draftScope,account:'account-b'};
+ view.manageMessages.hidden=true;
+ receipts.send({status:'unknown'});await sending;
+ assert.equal(view.manageMessages.hidden,true);
+});
 test('idle first send exposes stop only for a supported send in the current scope',async()=>{
  const {ui,view,receipts}=await stopConcurrencyFixture();view.input.value='first task';
  const sending=view.submit();assert.equal(view.freshDetail,false);assert.equal(view.stop.hidden,false);assert.equal(view.stop.disabled,false);
@@ -2158,4 +2259,38 @@ test('ordinary writes and duplicate stop stay blocked while stop is pending even
  assert.equal(await view.mutate('settings',{}),null);await view.submit();await view.mutate('stop',{});
  assert.equal(ui.calls.filter(c=>c.body&&/\/(send|settings|stop)(?:\?|$)/.test(c.url)).length,1);
  receipts.stop({status:'accepted'});await stopping;
+});
+
+test('native remaining quota tool shares windows independently of model settings and provider name',async()=>{
+ for(const provider of ['antigravity','claude','zcode']){
+  const ui=fixture();ui.setHandler(async url=>url.includes('/detail')?{session:{id:'a',model:'model-a',status:'idle',quotaWindows:[{windowDurationMins:300,remainingPercent:60},{windowDurationMins:10080,remainingPercent:0}],capabilities:{send:true,models:true}},messages:[]}:{sessions:[]});
+  await ui.view.choose(provider);await ui.view.open('a');
+  assert.equal(ui.view.quotaButton.hidden,false);assert.equal(ui.view.quotaButton.querySelectorAll('.quota-pie-ring').length,2);
+  assert.match(ui.view.quotaButton.title,/60%[\s\S]*0%/);assert.doesNotMatch(ui.view.modelButton.title,/%/);
+  assert.equal(ui.view.modelButton.contains(ui.view.quotaButton),false);
+ }
+});
+
+test('remaining quota closes on an identity switch and rejects the old catalog response',async()=>{
+ const ui=await opened(),view=ui.view;
+ view.state.modelCatalogIdentity='account-a';view.listCacheIdentity='gateway-a';view.listCacheHost='host-a';
+ const summary={groups:[{name:'Private account A',windows:[{windowDurationMins:300,remainingPercent:61}]}],checkedAt:123};
+ view.recordQuota({usageSummary:summary,models:[{id:view.state.model,quotaWindows:summary.groups[0].windows}]});
+ let resolve;ui.setHandler(()=>new Promise(done=>resolve=done));
+ view.quota();const dialog=view.quotaDialog;assert.equal(dialog.root.open,true);assert.match(dialog.content.textContent,/Private account A/);
+ view.state={...view.state,modelCatalogIdentity:'account-b',quotaWindows:[]};view.updateComposer();
+ assert.equal(dialog.root.open,false);assert.equal(view.quotaButton.hidden,true);
+ resolve({usageSummary:{...summary,tier:'LATE ACCOUNT A'},cache:{identity:'account-a'},models:[]});
+ await new Promise(setImmediate);
+ assert.equal(view.quotaSnapshot.value,summary);assert.equal(view.quotaValue().groups.length,0);
+ assert.doesNotMatch(ui.root.textContent,/LATE ACCOUNT A/);
+});
+
+test('desktop account change saves the previous draft before invalidating the matching offline namespace',async()=>{
+ const ui=await opened(),view=ui.view;
+ ui.run("window.offlineAccountActions=[];window.BridgeOfflineComposer={invalidate:async(provider,host)=>window.offlineAccountActions.push(provider+'|'+host)}");
+ view.saveDraft=()=>ui.run("window.offlineAccountActions.push('save')");
+ view.refresh=async()=>ui.run("window.offlineAccountActions.push('refresh')");
+ await view.accountChanged(view.provider,{activeId:'old'},{activeId:'new'});
+ assert.deepEqual(Array.from(ui.run('window.offlineAccountActions')),['save',view.provider+'|local','refresh']);
 });

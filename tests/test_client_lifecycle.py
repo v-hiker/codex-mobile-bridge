@@ -18,6 +18,60 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ClientLifecycleTests(unittest.TestCase):
+    def test_codex_running_and_configured_is_not_connection_evidence(self):
+        self.running = True
+        self.bridge.desktop_connection_ready = Mock(return_value=False)
+        self.accounts.desktop_runtime_status = Mock(return_value={'supported': True, 'preparation': {}})
+        client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertFalse(client['connected'])
+        self.assertTrue(client['canInitializeDesktop'])
+        self.bridge.desktop_connection_ready.return_value = True
+        client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertTrue(client['connected'])
+        self.assertTrue(client['canInitializeDesktop'])
+
+    def test_codex_initialization_state_blocks_duplicate_buttons_until_worker_finishes(self):
+        self.running = True
+        self.bridge.desktop_connection_ready = Mock(return_value=False)
+        self.accounts.desktop_runtime_status = Mock(return_value={'supported':True, 'preparation':{}})
+        self.accounts.state = {'operation':'desktopRuntime', 'phase':'verifying'}
+        client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertEqual(client['connectionState'], 'connecting')
+        self.assertFalse(client['canInitializeDesktop'])
+        self.accounts.state.update(phase='failed', taskStateUnavailable=True)
+        client = self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertTrue(client['canInitializeDesktop'])
+        self.assertTrue(client['confirmTaskState'])
+
+    def test_codex_initialization_failure_is_visible_even_when_transport_is_connected(self):
+        self.running=True
+        self.bridge.desktop_connection_ready=Mock(return_value=True)
+        self.accounts.desktop_runtime_status=Mock(return_value={'supported':True,'preparation':{}})
+        self.accounts.state={'operation':'desktopRuntime','phase':'failed','taskStateUnavailable':True,
+                             'error':'部分任务状态无法核验'}
+        client=self.manager.clients(refresh=True)['clients'][0]['entries'][0]
+        self.assertTrue(client['connected'])
+        self.assertTrue(client['canInitializeDesktop'])
+        self.assertTrue(client['confirmTaskState'])
+        self.assertEqual(client['reason'],'部分任务状态无法核验')
+
+    def test_codex_management_initialization_delegates_without_toggling_or_exposing_accounts(self):
+        self.accounts.control=Mock(return_value={'accounts':['private-inventory']})
+        value={'provider':'codex','enabled':True,'initializeDesktop':True,'requestId':'fixture',
+               'confirmed':True,'tasksConfirmed':True,'acknowledgeUnavailable':True}
+        config=deepcopy(self.manager.config)
+        result=self.manager.toggle_client(value)
+        self.accounts.control.assert_called_once_with({'action':'initializeDesktopRuntime',
+            'requestId':'fixture','confirmed':True,'tasksConfirmed':True,'acknowledgeUnavailable':True})
+        self.assertNotIn('accounts',result)
+        self.assertEqual(self.manager.config,config)
+        self.stop.assert_not_called();self.launch.assert_not_called()
+        self.accounts.prepare_desktop_runtime.assert_not_called()
+        self.accounts.control.reset_mock()
+        for extra in ({'quitDesktop':True},{'forceDesktop':True},{'home':'/other'}):
+            with self.assertRaises(ValueError):self.manager.toggle_client({**value,**extra})
+        self.accounts.control.assert_not_called()
+
     def test_wsl_is_a_codex_entry_and_never_uses_native_desktop_lifecycle(self):
         from bridge.features.endpoints.registry import Entries
         from bridge.platforms.windows import wsl
@@ -414,6 +468,16 @@ class ClientLifecycleTests(unittest.TestCase):
                             workspace.terminal(workspace.identifier, 'fixture', action, {})
                     operate.assert_not_called()
                     terminal.assert_not_called()
+
+    def test_rebinding_rejects_host_upload_resolved_before_body_arrives(self):
+        provider = 'claude'
+        workspace = DesktopWorkspace(self.manager, provider, 'one', str(self.root),
+                                     epoch=self.manager.binding_epochs[provider])
+        self.manager.binding_epochs[provider] += 1
+        with patch('bridge.features.workspace.workspace.operate') as operate:
+            with self.assertRaisesRegex(ValueError, '客户端状态已变化'):
+                workspace.workspace(workspace.identifier, 'upload', {'scope': 'host', 'path': '/tmp/new'})
+            operate.assert_not_called()
 
     def test_disable_waits_for_accepted_workspace_mutation(self):
         workspace = DesktopWorkspace(self.manager, 'claude', 'one', str(self.root))

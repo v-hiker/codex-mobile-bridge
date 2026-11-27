@@ -13,6 +13,7 @@ import secrets
 import signal
 import socket
 import struct
+import tempfile
 import subprocess
 import sys
 import threading
@@ -23,6 +24,7 @@ from .app_server import (AppServerError, AppServerRequestNotSent, AppServerUnava
                          AppServerUnknownResult, response_result)
 from .cli_session import CliSessions
 from .desktop_stdio import DesktopStdio, MAX_LINE, METADATA_METHODS
+from .ipc_json import FrameReader, JsonLine, iter_wire_json
 from .ipc import DesktopIPC, IPCError, validate_stream_state
 from . import desktop_runtime as runtime
 
@@ -35,14 +37,16 @@ CONTROL_METHODS = frozenset(('thread/loaded/list', 'thread/turns/list', 'thread/
 def _forward_native_output(stream, router, stopped):
     # Popen keeps stdin unbuffered; reading lines from its raw stdout would
     # issue one OS read per byte and stall all replies behind large histories.
-    stream = io.BufferedReader(stream)
-    while not stopped.is_set():
-        line = stream.readline(MAX_LINE + 2)
-        if not line:
-            return
-        if len(line.rstrip(b'\r\n')) > MAX_LINE:
-            raise ValueError('原生桌面回执过大')
-        router.from_native(json.loads(line))
+    with io.BufferedReader(stream) as buffered:
+        while not stopped.is_set():
+            reader = FrameReader(JsonLine(buffered), None, DesktopIPC.READ_CHUNK, native_rpc=True)
+            message = reader.read(allow_eof=True)
+            if message is None:
+                return
+            router.from_native(message)
+
+
+HISTORY_TURN_LIMIT = 40
 
 
 class _NativeClient:
@@ -71,13 +75,13 @@ class _NativeClient:
             # A newly created durable thread has no stored turns before input.
             return value
 
-        # Older turns are already available through the gateway's saved-history
-        # projection. Only the current turn is needed to follow its native owner.
+        # Retain only previously observed turns confirmed by native headers.
         page = self.request('thread/turns/list', {'threadId': params['threadId'],
-            'cursor': None, 'limit': 1, 'sortDirection': 'desc', 'itemsView': 'notLoaded'}, timeout)
+            'cursor': None, 'limit': HISTORY_TURN_LIMIT, 'sortDirection': 'desc', 'itemsView': 'notLoaded'}, timeout)
         turns = page.get('data')
-        if not isinstance(turns, list) or len(turns) > 1:
+        if not isinstance(turns, list) or len(turns) > HISTORY_TURN_LIMIT:
             raise AppServerUnavailable('原生聊天历史分页格式已变化')
+        headers = turns
         more = bool(page.get('nextCursor'))
         if turns:
             turn = turns[0]
@@ -92,7 +96,7 @@ class _NativeClient:
                 items.append(row['item'])
             more = more or bool(page.get('nextCursor'))
             turns = [{**turn, 'items': items, '_itemsComplete': not page.get('nextCursor')}]
-        return {**value, 'thread': {**thread, 'turns': turns,
+        return {**value, 'thread': {**thread, 'turns': turns, '_historyHeaders': headers,
             'turnsPagination': {'hasLoadedOldest': not more}}}
 
     def is_loaded(self, thread_id):
@@ -178,14 +182,39 @@ class HostedSessions(CliSessions):
                 if value.get('params', {}).get('threadId') == thread_id}
         return self.refresh(thread_id)
 
-    @staticmethod
-    def _state(thread, requests, metadata):
+    def _state(self, thread, requests, metadata):
         state = CliSessions._state(thread, requests, metadata)
         if 'turnsPagination' in thread:
-            state['turnsPagination'] = thread['turnsPagination']
+            state['turnsPagination'] = dict(thread['turnsPagination'])
         for original, turn in zip(thread.get('turns', []), state['turns']):
             if original.get('_itemsComplete') is False:
                 turn['_itemsComplete'] = False
+        if '_historyHeaders' in thread:
+            previous = {turn['turnId']: turn for turn in
+                        (self.states.get(thread['id']) or {}).get('turns', [])}
+            retained = []
+            size = len(json.dumps(state, ensure_ascii=False).encode())
+            # Reuse only the contiguous, native-confirmed tail on this connection.
+            # Saved history never supplies items, runtime status or approvals here.
+            for header in thread['_historyHeaders'][1:]:
+                prior = previous.get(header['id'])
+                if prior is None:
+                    break
+                row = {**copy.deepcopy(prior), 'status': header.get('status'), 'error': header.get('error')}
+                if header.get('startedAt') is not None:
+                    row['turnStartedAtMs'] = header['startedAt'] * 1000
+                if header.get('completedAt') is not None:
+                    row['turnCompletedAtMs'] = header['completedAt'] * 1000
+                if header.get('model'):
+                    row['params'] = {'model': header['model'], 'effort': header.get('reasoningEffort')}
+                size += len(json.dumps(row, ensure_ascii=False).encode()) + 1
+                if size > MAX_LINE:
+                    break
+                retained.append(row)
+            state['turns'] = list(reversed(retained)) + state['turns']
+            state['turnsPagination']['hasLoadedOldest'] &= (
+                len(state['turns']) == len(thread['_historyHeaders']) and
+                all(turn.get('_itemsComplete') is not False for turn in state['turns']))
         return state
 
     def _check_joined_identity(self, thread_id):
@@ -295,8 +324,11 @@ class HostedSessions(CliSessions):
             state = self.states.get(thread_id)
             if state is not None:
                 turns = state['turns']
-                if len(turns) > 2:
-                    del turns[:-2]
+                if len(turns) > HISTORY_TURN_LIMIT:
+                    del turns[:-HISTORY_TURN_LIMIT]
+                    revisions = self.turn_revisions.get(thread_id, {})
+                    self.turn_revisions[thread_id] = {turn['turnId']: revisions.get(turn['turnId'], 0)
+                                                       for turn in turns}
                     state['turnsPagination'] = {'hasLoadedOldest': False}
                 for turn in turns:
                     if len(turn['items']) > 100:
@@ -358,11 +390,17 @@ class _Follower:
         self.revision = 0
 
     def send(self, message):
-        data = json.dumps(message, ensure_ascii=False, separators=(',', ':')).encode()
-        if len(data) > DesktopIPC.MAX_FRAME:
-            raise ValueError('桌面快照超过接入容量限制')
-        with self.write_lock:
-            self.stream.sendall(struct.pack('<I', len(data)) + data)
+        with tempfile.SpooledTemporaryFile(max_size=DesktopIPC.READ_CHUNK) as encoded:
+            for chunk in iter_wire_json(message):
+                encoded.write(chunk)
+                if encoded.tell() > DesktopIPC.MAX_FRAME:
+                    raise ValueError('桌面快照超过原生帧长度')
+            length = encoded.tell()
+            encoded.seek(0)
+            with self.write_lock:
+                self.stream.sendall(struct.pack('<I', length))
+                while chunk := encoded.read(DesktopIPC.READ_CHUNK):
+                    self.stream.sendall(chunk)
 
     def snapshot(self, thread_id, state):
         with self.condition:
@@ -519,7 +557,7 @@ class MetadataClient:
         self.client.close()
 
 
-def serve(config, app, host, arguments, initialize, env=None):
+def serve(config, app, host, arguments, initialize, env=None, dispatcher=None):
     """The App-owned adapter is the sole native stdin holder on both platforms."""
     home = Path(config['home'])
     root = runtime.directory(home)
@@ -535,6 +573,8 @@ def serve(config, app, host, arguments, initialize, env=None):
         'transport': 'desktop-stdio', 'socket': endpoint, 'generation': generation, 'controlToken': token}
     if host is not None:
         record['host'] = host
+    if dispatcher is not None:
+        record['dispatcher'] = dispatcher
     runtime._write(active, json.dumps(record))
     stopped = threading.Event()
     previous = {sig: signal.signal(sig, lambda *_: stopped.set()) for sig in (signal.SIGTERM, signal.SIGINT)}
@@ -544,8 +584,13 @@ def serve(config, app, host, arguments, initialize, env=None):
 
     def emit(message):
         with output_lock:
-            sys.stdout.buffer.write(json.dumps(message, ensure_ascii=False).encode() + b'\n')
-            sys.stdout.buffer.flush()
+            # The App still receives the complete native reply. Hold the output
+            # lock across all chunks to preserve the original JSONL boundaries.
+            output = sys.stdout.buffer
+            for chunk in iter_wire_json(message):
+                output.write(chunk)
+            output.write(b'\n')
+            output.flush()
 
     def write(data):
         remaining = memoryview(data)

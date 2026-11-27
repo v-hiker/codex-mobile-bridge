@@ -14,6 +14,7 @@ import queue
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -22,6 +23,11 @@ import uuid
 from pathlib import Path
 from contextlib import nullcontext
 from urllib.parse import urlsplit
+
+try:
+    import tomllib
+except ImportError:
+    from bridge.vendor import wsl_tomli as tomllib
 
 from bridge.features.accounts.account import AccountRPC, AccountError, Account
 from bridge.clients.desktop_app import DesktopApp
@@ -309,12 +315,12 @@ class Accounts:
     def management(self):
         try:
             text = (self.home/'config.toml').read_text(encoding='utf-8')
+            detected = magpie_managed(config=tomllib.loads(text))
         except FileNotFoundError:
-            text = ''
-        except (OSError, UnicodeError):
+            detected = False
+        except (OSError, UnicodeError, ValueError, TypeError, AttributeError, ImportError):
             return {'mode': 'external', 'external': True, 'reason': '无法确认接入配置，已暂停覆盖配置'}
         configured = self.index.get('accessManagement', 'auto')
-        detected = magpie_managed(text=text)
         return {'mode': configured, 'external': configured == 'external' or detected,
                 'detected': 'magpie' if detected else None,
                 'reason': '此入口由 Magpie 或外部工具管理；请在原工具中切换接入' if configured == 'external' or detected else None}
@@ -331,7 +337,11 @@ class Accounts:
         return result
 
     def desktop_runtime_status(self):
-        supported = sys.platform in ('darwin', 'win32') and getattr(self.bridge, 'host', 'local') == 'local'
+        supported = sys.platform in ('darwin', 'win32', 'linux') and getattr(self.bridge, 'host', 'local') == 'local'
+        if supported and sys.platform == 'linux':
+            from bridge.platforms.linux.codex_launch import supported as supported_layout
+            application = self.index.get('desktopExecutable') or DesktopApp.discover(self.runtime)
+            supported = bool(application and supported_layout(application))
         result = {'supported': supported, 'configured': False, 'preparation': dict(self.desktop_preparation)}
         if supported:
             from bridge.clients.codex.desktop_runtime import settings
@@ -836,6 +846,9 @@ class Accounts:
             return self.desktop_status()
         if action == 'account':
             return self.account(value)
+        if action == 'quotaContinuation':
+            changes = {k: v for k, v in value.items() if k != 'action'}
+            return self.monitor.continuation.configure(changes) if changes else self.monitor.continuation.public()
         if action == 'reminders':
             self.monitor.configure(value.get('preferences'))
             return self.desktop_status()
@@ -958,7 +971,7 @@ class Accounts:
     def desktop_runtime_lifecycle(self):
         # Lock even before initialization has saved settings: another gateway
         # may be between its idle audit and the first shared configuration write.
-        if sys.platform in ('darwin', 'win32') and getattr(self.bridge, 'host', 'local') == 'local':
+        if sys.platform in ('darwin', 'win32', 'linux') and getattr(self.bridge, 'host', 'local') == 'local':
             from bridge.clients.codex.desktop_runtime import initialization_lock
             return initialization_lock(self.home)
         return nullcontext()
@@ -1032,7 +1045,7 @@ class Accounts:
             return self.public()
 
     def initialize_desktop_runtime(self, value):
-        if sys.platform not in ('darwin', 'win32') or getattr(self.bridge, 'host', 'local') != 'local':
+        if sys.platform not in ('darwin', 'win32', 'linux') or getattr(self.bridge, 'host', 'local') != 'local':
             raise ValueError('此入口不支持 Codex 原生连接初始化')
         required = {'action', 'confirmed', 'tasksConfirmed', 'requestId'}
         if (set(value) - {'acknowledgeUnavailable'} != required or value.get('confirmed') is not True
@@ -1079,7 +1092,7 @@ class Accounts:
         Waiting does not change account state or hold a gate between attempts.
         Once a lifecycle write starts, a failure requires explicit recovery.
         """
-        if sys.platform not in ('darwin', 'win32') or getattr(self.bridge, 'host', 'local') != 'local':
+        if sys.platform not in ('darwin', 'win32', 'linux') or getattr(self.bridge, 'host', 'local') != 'local':
             return False
         if not self.gate.acquire(timeout=0):
             self.desktop_preparation = {'state': 'waiting', 'reason': '等待当前操作结束后自动准备原生侧聊'}
@@ -1105,10 +1118,22 @@ class Accounts:
         if sys.platform == 'win32':
             from bridge.platforms.windows.codex_daemon_env import read_process_environment
             from bridge.platforms.windows.desktop import commands
+        elif sys.platform == 'linux':
+            from bridge.platforms.linux.codex_daemon_env import read_process_environment
+            from bridge.platforms.linux.desktop import commands
         else:
             from bridge.platforms.macos.codex_daemon_env import read_process_environment
             from bridge.platforms.macos.desktop import commands
         descriptor = {'id': 'codex', 'installed': True, 'executable': str(app.executable), 'dataDirectory': str(self.home)}
+
+        def ordinary_launch():
+            from bridge.clients.codex.desktop_runtime import enable_ordinary_launch
+            try:
+                return {'ordinaryLaunch': enable_ordinary_launch(self.home, app.executable)}
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                # A launch-environment conflict must not discard a healthy
+                # connection or cause another desktop restart.
+                return {'ordinaryLaunch': False, 'ordinaryLaunchError': str(exc)}
 
         def observed():
             state = inspect_client(descriptor)
@@ -1121,6 +1146,7 @@ class Accounts:
             launch_commands = commands(main) if main else {}
             for pid, identity in identities.items():
                 record = ({'processStartTime': str(identity['created'])} if sys.platform == 'win32' else
+                          {'processIdentity': {'bootId': identity['bootId'], 'startTicks': identity['birth'][0]}} if sys.platform == 'linux' else
                           {'processIdentity': {'uniqueId': identity['birth'][0], 'startSeconds': identity['started'][0],
                                                'startMicroseconds': identity['started'][1]}})
                 environment, _ = read_process_environment(pid, record, app.executable,
@@ -1152,7 +1178,7 @@ class Accounts:
                         prior = preparation(self.home)
                         if prior and prior['state'] == 'pending':
                             record_preparation(self.home, prior['requestId'], complete=True)
-                        self.desktop_preparation = {'state': 'ready'}
+                        self.desktop_preparation = {'state': 'ready', **ordinary_launch()}
                         return False
                     prior = preparation(self.home)
                     if prior and prior['state'] == 'pending':
@@ -1229,7 +1255,7 @@ class Accounts:
                 record_preparation(self.home, self.state['requestId'], complete=True)
                 self.phase('complete', error=None)
                 self.desktop_preparation = ({'state': 'failed', 'reason': str(preparation_error)}
-                                            if preparation_error else {'state': 'ready'})
+                                            if preparation_error else {'state': 'ready', **ordinary_launch()})
                 return False
         except Exception as exc:
             # Keep a successfully saved configuration available for an explicit
@@ -1313,7 +1339,7 @@ class Accounts:
             try:
                 stream = connect_stream(self.bridge.ipc.path, timeout=.5)
             except OSError:
-                if sys.platform == 'darwin' and getattr(self.bridge, 'host', 'local') == 'local':
+                if sys.platform in ('darwin', 'linux') and getattr(self.bridge, 'host', 'local') == 'local':
                     from bridge.clients.codex.desktop_runtime import wait_stopped
                     wait_stopped(self.home)
                 return

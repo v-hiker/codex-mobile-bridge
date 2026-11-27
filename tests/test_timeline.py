@@ -13,6 +13,19 @@ def view(count=320, sequence=1):
 
 
 class TimelineTests(unittest.TestCase):
+    def test_revert_anchor_survives_page_and_changes_with_the_native_message(self):
+        timeline = Timeline()
+        message = {'id': 'input', 'role': 'user', 'text': 'request',
+                   'revertStepIndex': 4, 'revertMessageId': 'a' * 64}
+        timeline.update({'sequence': 1, 'turns': [{'id': 'turn', 'messages': [message]}]})
+        first = timeline.page()['rows'][0]
+        self.assertEqual((first['revertStepIndex'], first['revertMessageId']), (4, 'a' * 64))
+        message = {**message, 'text': 'replacement', 'revertMessageId': 'b' * 64}
+        timeline.update({'sequence': 2, 'turns': [{'id': 'turn', 'messages': [message]}]})
+        second = timeline.page()['rows'][0]
+        self.assertEqual(second['revertMessageId'], 'b' * 64)
+        self.assertNotEqual(first['version'], second['version'])
+
     def test_file_activity_preserves_complete_native_paths_and_counts_without_copying_patches(self):
         from bridge.features.sessions.model import normalize_item
         paths = ['/repo/' + 'long-directory/' * 20 + 'file-' + str(i) + '.py' for i in range(65)]
@@ -298,6 +311,31 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual((rows[0]['model'],rows[0]['effort']),('gpt-6-astra','max'))
         self.assertEqual((rows[1]['model'],rows[1]['effort']),('gemini-fixture','high'))
         self.assertNotIn('model',rows[2]);self.assertNotIn('effort',rows[2])
+
+    def test_process_clocks_survive_but_only_model_replies_get_recorded_model(self):
+        state = {'latestModel': 'current-setting', 'turns': [{
+            'turnId': 'saved', 'status': 'completed',
+            'params': {'model': 'recorded-model', 'effort': 'high'},
+            'items': [
+                {'id': 'u', 'type': 'userMessage', 'content': [{'type': 'text', 'text': 'Question'}], 'timestamp': 1000},
+                {'id': 'a', 'type': 'agentMessage', 'text': 'Interim', 'phase': 'commentary', 'timestamp': 2000},
+                {'id': 's', 'type': 'steeringUserMessage', 'input': [{'type': 'text', 'text': 'Supplement'}], 'timestamp': 3000},
+                {'id': 'r', 'type': 'reasoning', 'summary': [{'text': 'Reasoning'}], 'timestamp': 4000},
+                {'id': 'c', 'type': 'commandExecution', 'command': 'fixture', 'timestamp': 5000},
+            ]}]}
+        timeline = Timeline(); timeline.update({**normalize_state(state), 'sequence': 1})
+        rows = timeline.rows[1:]
+        self.assertEqual(len(rows), 4)
+        self.assertEqual([row.get('timestamp') for row in rows], [2000, 3000, 4000, 5000])
+        self.assertEqual((rows[0].get('model'), rows[0].get('effort')), ('recorded-model', 'high'))
+        self.assertTrue(all('model' not in row and 'effort' not in row for row in rows if row['role'] == 'user' or row.get('kind') == 'commandExecution'))
+        self.assertNotIn('model', timeline.rows[0], 'the opening user prompt keeps its existing presentation')
+        for sync in (False, True):
+            exposed = [row for key in timeline.process_groups
+                       for row in timeline.process(timeline.cursor(key), sync=sync)['rows']]
+            self.assertEqual([row.get('timestamp') for row in exposed], [2000, 4000, 5000])
+            self.assertEqual((exposed[0].get('model'), exposed[0].get('effort')), ('recorded-model', 'high'))
+            self.assertTrue(all('model' not in row and 'effort' not in row for row in exposed if row['role'] == 'user' or row.get('kind') == 'commandExecution'))
 
     def test_saved_native_file_footer_survives_partial_live_turn_outside_saved_text_window(self):
         # Production API shape: the completed turn's tail is native-loaded while

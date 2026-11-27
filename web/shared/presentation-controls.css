@@ -23,7 +23,7 @@
 :is(#model-dialog,.ds-model-dialog) .model-choice{position:relative;display:flex;align-items:center;gap:12px;min-width:0;min-height:42px;margin:0;padding:8px 12px;border-radius:10px;cursor:pointer;color:var(--text);font-size:13px;transition:background .15s,color .15s}
 :is(#model-dialog,.ds-model-dialog) .model-choice:hover{background:var(--raised)}
 :is(#model-dialog,.ds-model-dialog) .model-choice:has(input:checked){background:var(--soft);color:var(--green);font-weight:650}
-:is(#model-dialog,.ds-model-dialog) .model-choice:has(input:focus-visible),:is(#model-dialog,.ds-model-dialog) .effort-choice:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:-2px}
+:is(#model-dialog,.ds-model-dialog) .model-choice:has(input:focus-visible:not([data-touch-focus])),:is(#model-dialog,.ds-model-dialog) .effort-choice:has(input:focus-visible:not([data-touch-focus])){outline:2px solid var(--accent);outline-offset:-2px}
 :is(#model-dialog,.ds-model-dialog) .model-choice-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :is(#model-dialog,.ds-model-dialog) .model-choice-badge{flex:none;padding:2px 6px;border:1px solid var(--line);border-radius:6px;color:var(--muted);font-size:10px;font-weight:500}
 :is(#model-dialog,.ds-model-dialog) .model-choice-check{flex:none;opacity:0;font-size:16px;line-height:1}
@@ -104,5 +104,11 @@ body:has(#app:not([hidden]))>.phone-header{display:none}
 .list-actions .appearance-button{width:40px;height:44px;flex:none}
 
 .context-usage{display:inline-flex;align-items:center;justify-content:center;flex:none;padding:7px;min-width:32px}
-.context-usage-ring{display:block;width:17px;height:17px;border-radius:50%;background:conic-gradient(var(--green) var(--context-percent,0%),var(--line) 0);mask:radial-gradient(circle,transparent 46%,#000 50%);-webkit-mask:radial-gradient(circle,transparent 46%,#000 50%)}
+.context-usage-ring,.composer .remaining-quota .quota-pie-ring{width:17px;height:17px}
+.composer .remaining-quota .quota-chip{font-size:inherit}
+@media(max-width:420px){
+  .composer .remaining-quota{padding-inline:0}
+  .composer .remaining-quota .quota-badges{gap:2px}
+}
+.context-usage-ring{display:block;border-radius:50%;background:conic-gradient(var(--green) var(--context-percent,0%),var(--line) 0);mask:radial-gradient(farthest-side,transparent 60%,#000 62%);-webkit-mask:radial-gradient(farthest-side,transparent 60%,#000 62%)}
 .context-usage-ring.unknown{background:repeating-conic-gradient(from 10deg,var(--muted) 0deg 40deg,transparent 40deg 60deg);opacity:.65}
