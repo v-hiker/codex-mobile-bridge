@@ -78,10 +78,12 @@ test('nsis-stop-instances detects and stops processes inside target directory wh
     '-Mode', 'stop',
     '-DirsJoined', target,
     '-CallerPid', String(protectedChild.pid),
+    '-StatusFile', path.join(target, 'phase.txt'),
   ]);
   // sleeper exited, protectedChild remains alive because it is CallerPid; let's check both!
   // Since protectedChild is exempt from Get-LockState, Direct becomes empty -> exit 0!
   assert.equal(stopped.status, 0);
+  assert.equal(fs.readFileSync(path.join(target, 'phase.txt'), 'ascii'), 'DONE');
   assert.equal(pidAlive(sleeper.pid), false);
   assert.equal(pidAlive(protectedChild.pid), true);
 

@@ -280,7 +280,9 @@ function register(){
       updateConfirmation=false;
       if(answer.response!==1)return result;
       if(blocked())throw Error('请等待当前操作完成后再更新。');
-      await worker('update-stop-blockers',{target:updateTarget(),force:true});
+      updater.set?.('preparing',{...updater.status(),message:'正在自动停止关联实例并释放文件锁…'});
+      try{await worker('update-stop-blockers',{target:updateTarget(),force:true});}
+      catch(error){updater.set?.('error',{...updater.status(),message:error.message});throw error;}
       if(blocked())throw Error('请等待当前操作完成后再更新。');
       return await updater.install(installOptions);
     };

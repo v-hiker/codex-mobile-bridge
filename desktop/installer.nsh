@@ -97,7 +97,9 @@ cmb_stop_done:
   !ifdef BUILD_UNINSTALLER
     !insertmacro CMB_CHECK_AND_STOP_RUNNING_BODY
   !else
-    Call CmbCheckAndStopRunning
+    ${If} $CmbStopDoneFlag != "1"
+      Call CmbCheckAndStopRunning
+    ${EndIf}
   !endif
 !macroend
 
@@ -254,8 +256,352 @@ cmb_stop_done:
       BringToFront
     FunctionEnd
 
+    !ifndef PBS_MARQUEE
+      !define PBS_MARQUEE 0x08
+    !endif
+    !ifndef PBM_SETMARQUEE
+      !define PBM_SETMARQUEE 0x040A
+    !endif
+    !ifndef WM_NOTIFY_OUTER_NEXT
+      !define WM_NOTIFY_OUTER_NEXT 0x0408
+    !endif
+
+    Var CmbStopPage
+    Var CmbStopTitleLabel
+    Var CmbStopStatusLabel
+    Var CmbStopHintLabel
+    Var CmbStopProgressBar
+    Var CmbStopProcHandle
+    Var CmbStopState
+    Var CmbStopHolderLabel
+    Var CmbStopDirs
+    Var CmbStopCallerPid
+    Var CmbStopTick
+    Var CmbStopDoneFlag
+
     Function CmbCheckAndStopRunning
       !insertmacro CMB_CHECK_AND_STOP_RUNNING_BODY
+    FunctionEnd
+
+    Function CmbCloseAsyncProc
+      ${If} $CmbStopProcHandle != ""
+      ${AndIf} $CmbStopProcHandle != "0"
+        System::Call 'kernel32::CloseHandle(p $CmbStopProcHandle)'
+        StrCpy $CmbStopProcHandle "0"
+      ${EndIf}
+    FunctionEnd
+
+    Function CmbStartAsyncPs
+      Push $R1
+      Push $R2
+      Push $0
+      Push $1
+      Push $2
+      Call CmbCloseAsyncProc
+      System::Alloc 68
+      Pop $R1
+      System::Call "*$R1(i 68)"
+      System::Alloc 16
+      Pop $R2
+      System::Call 'kernel32::CreateProcessW(p 0, w r10, p 0, p 0, i 0, i 0x08000000, p 0, p 0, p r11, p r12) i.r0'
+      ${If} $0 != 0
+        System::Call "*$R2(p.r1, p.r2)"
+        System::Call 'kernel32::CloseHandle(p r2)'
+        StrCpy $CmbStopProcHandle $1
+      ${EndIf}
+      System::Free $R1
+      System::Free $R2
+      Pop $2
+      Pop $1
+      Pop $0
+      Pop $R2
+      Pop $R1
+    FunctionEnd
+
+    Function CmbUpdateRunningText
+      Push $R1
+      Push $R2
+      Push $R3
+      Push $R4
+      Push $R5
+
+      IntOp $CmbStopTick $CmbStopTick + 1
+      IntOp $R3 $CmbStopTick % 4
+      ${If} $R3 == 0
+        StrCpy $R5 ""
+      ${ElseIf} $R3 == 1
+        StrCpy $R5 "."
+      ${ElseIf} $R3 == 2
+        StrCpy $R5 ".."
+      ${Else}
+        StrCpy $R5 "..."
+      ${EndIf}
+
+      StrCpy $R2 ""
+      ClearErrors
+      FileOpen $R1 "$PLUGINSDIR\cmb-stop-phase.txt" r
+      ${IfNot} ${Errors}
+        FileRead $R1 $R2
+        FileClose $R1
+      ${EndIf}
+
+      ${If} $R2 == "STOPPING_HOLDERS"
+        StrCpy $R4 "正在优雅退出 $CmbStopHolderLabel 并释放旧版网关占用$R5"
+      ${ElseIf} $R2 == "STOPPING_GATEWAY"
+        StrCpy $R4 "正在停止后台网关服务并释放端口$R5"
+      ${ElseIf} $R2 == "STOPPING_BRIDGE"
+        StrCpy $R4 "正在关闭旧版 Codex Mobile Bridge 进程$R5"
+      ${ElseIf} $R2 == "VERIFYING"
+        StrCpy $R4 "正在确认安装目录文件锁已完全释放$R5"
+      ${ElseIf} $CmbStopState == "inspecting"
+        StrCpy $R4 "正在检测运行中的旧版实例$R5"
+      ${Else}
+        StrCpy $R4 "正在停止运行中的旧版实例$R5"
+      ${EndIf}
+
+      ${NSD_SetText} $CmbStopStatusLabel "$R4"
+
+      Pop $R5
+      Pop $R4
+      Pop $R3
+      Pop $R2
+      Pop $R1
+    FunctionEnd
+
+    Function CmbStopPollTimer
+      ${If} $CmbStopProcHandle == ""
+      ${OrIf} $CmbStopProcHandle == "0"
+        ${NSD_KillTimer} CmbStopPollTimer
+        Return
+      ${EndIf}
+
+      System::Call 'kernel32::WaitForSingleObject(p $CmbStopProcHandle, i 0) i.r0'
+      ${If} $0 == 258
+        Call CmbUpdateRunningText
+        Return
+      ${EndIf}
+
+      StrCpy $1 1
+      System::Call 'kernel32::GetExitCodeProcess(p $CmbStopProcHandle, *i.r1)'
+      Call CmbCloseAsyncProc
+      ${NSD_KillTimer} CmbStopPollTimer
+
+      ${If} $CmbStopState == "inspecting"
+        ${If} $1 == 0
+          StrCpy $CmbStopDoneFlag "1"
+          SendMessage $CmbStopProgressBar ${PBM_SETMARQUEE} 0 0
+          GetDlgItem $0 $HWNDPARENT 1
+          EnableWindow $0 1
+          SendMessage $HWNDPARENT ${WM_NOTIFY_OUTER_NEXT} 1 0
+          Return
+        ${ElseIf} $1 == 10
+          StrCpy $CmbStopState "stopping"
+          StrCpy $CmbStopTick 0
+          Delete "$PLUGINSDIR\cmb-stop-phase.txt"
+          ${NSD_SetText} $CmbStopTitleLabel "检测到旧版实例，正在自动停止..."
+          ${NSD_SetText} $CmbStopStatusLabel "正在停止后台网关与 Codex Mobile Bridge..."
+          StrCpy $R0 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\cmb-stop-instances.ps1" -Mode stop -DirsJoined "$CmbStopDirs" -CallerPid $CmbStopCallerPid -StatusFile "$PLUGINSDIR\cmb-stop-phase.txt"'
+          Call CmbStartAsyncPs
+          ${If} $CmbStopProcHandle == "0"
+            StrCpy $CmbStopState "retry"
+            SendMessage $CmbStopProgressBar ${PBM_SETMARQUEE} 0 0
+            ShowWindow $CmbStopProgressBar ${SW_HIDE}
+            ${NSD_SetText} $CmbStopTitleLabel "无法启动自动停止助手"
+            ${NSD_SetText} $CmbStopStatusLabel "请手动关闭旧版 Codex Mobile Bridge 与网关进程，然后点击「重试」继续。"
+            GetDlgItem $0 $HWNDPARENT 3
+            EnableWindow $0 1
+            GetDlgItem $0 $HWNDPARENT 1
+            SendMessage $0 ${WM_SETTEXT} 0 "STR:重试(&R)"
+            EnableWindow $0 1
+            Return
+          ${EndIf}
+          ${NSD_CreateTimer} CmbStopPollTimer 120
+          Return
+        ${ElseIf} $1 == 20
+        ${OrIf} $1 == 21
+        ${OrIf} $1 == 22
+          ${If} $1 == 22
+            StrCpy $CmbStopHolderLabel "Codex Desktop 和 ZCode"
+          ${ElseIf} $1 == 21
+            StrCpy $CmbStopHolderLabel "ZCode"
+          ${Else}
+            StrCpy $CmbStopHolderLabel "Codex Desktop"
+          ${EndIf}
+          StrCpy $CmbStopState "confirm"
+          SendMessage $CmbStopProgressBar ${PBM_SETMARQUEE} 0 0
+          ShowWindow $CmbStopProgressBar ${SW_HIDE}
+          ${NSD_SetText} $CmbStopTitleLabel "检测到 $CmbStopHolderLabel 正在占用旧版网关"
+          ${NSD_SetText} $CmbStopStatusLabel "检测到 Codex Mobile Bridge 及关联的 $CmbStopHolderLabel 正在运行并占用旧版网关程序。$\r$\n$\r$\n点击下方「自动停止并继续」将按安全顺序自动停止上述实例并继续更新（请先确认其中没有正在执行的任务）。"
+          ${NSD_SetText} $CmbStopHintLabel "若暂不更新，可点击「取消」退出安装程序。"
+          GetDlgItem $0 $HWNDPARENT 3
+          EnableWindow $0 1
+          GetDlgItem $0 $HWNDPARENT 1
+          SendMessage $0 ${WM_SETTEXT} 0 "STR:自动停止并继续(&N) >"
+          EnableWindow $0 1
+          Return
+        ${Else}
+          StrCpy $CmbStopState "retry"
+          SendMessage $CmbStopProgressBar ${PBM_SETMARQUEE} 0 0
+          ShowWindow $CmbStopProgressBar ${SW_HIDE}
+          ${NSD_SetText} $CmbStopTitleLabel "检测运行中实例时发生异常"
+          ${NSD_SetText} $CmbStopStatusLabel "未能确认旧版实例状态。请点击「重试」重新检测，或先手动关闭旧版程序后再继续。"
+          ${NSD_SetText} $CmbStopHintLabel ""
+          GetDlgItem $0 $HWNDPARENT 3
+          EnableWindow $0 1
+          GetDlgItem $0 $HWNDPARENT 1
+          SendMessage $0 ${WM_SETTEXT} 0 "STR:重试(&R)"
+          EnableWindow $0 1
+          Return
+        ${EndIf}
+      ${EndIf}
+
+      ${If} $1 == 0
+        StrCpy $CmbStopDoneFlag "1"
+        SendMessage $CmbStopProgressBar ${PBM_SETMARQUEE} 0 0
+        ${NSD_SetText} $CmbStopTitleLabel "旧版实例已停止，正在进入安装..."
+        ${NSD_SetText} $CmbStopStatusLabel "已完成清理，正在准备写入新版文件..."
+        GetDlgItem $0 $HWNDPARENT 1
+        EnableWindow $0 1
+        SendMessage $HWNDPARENT ${WM_NOTIFY_OUTER_NEXT} 1 0
+        Return
+      ${EndIf}
+
+      StrCpy $CmbStopState "retry"
+      SendMessage $CmbStopProgressBar ${PBM_SETMARQUEE} 0 0
+      ShowWindow $CmbStopProgressBar ${SW_HIDE}
+      ${NSD_SetText} $CmbStopTitleLabel "部分运行中的实例未能自动停止"
+      ${NSD_SetText} $CmbStopStatusLabel "请先手动关闭 Codex Mobile Bridge 及相关程序，然后点击下方「重试」继续更新。"
+      ${NSD_SetText} $CmbStopHintLabel ""
+      GetDlgItem $0 $HWNDPARENT 3
+      EnableWindow $0 1
+      GetDlgItem $0 $HWNDPARENT 1
+      SendMessage $0 ${WM_SETTEXT} 0 "STR:重试(&R)"
+      EnableWindow $0 1
+    FunctionEnd
+
+    Function CmbStopPageCreate
+      ${If} ${Silent}
+        Abort
+      ${EndIf}
+
+      InitPluginsDir
+      File "/oname=$PLUGINSDIR\cmb-stop-instances.ps1" "${PROJECT_DIR}\desktop\nsis-stop-instances.ps1"
+      Delete "$PLUGINSDIR\cmb-stop-phase.txt"
+
+      StrCpy $CmbStopDirs "$INSTDIR"
+      ReadRegStr $R1 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
+      ${If} $R1 != ""
+        StrCpy $CmbStopDirs "$CmbStopDirs;$R1"
+      ${EndIf}
+      ReadRegStr $R2 HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
+      ${If} $R2 != ""
+        StrCpy $CmbStopDirs "$CmbStopDirs;$R2"
+      ${EndIf}
+      System::Call 'kernel32::GetCurrentProcessId() i.r0'
+      StrCpy $CmbStopCallerPid "$0"
+      StrCpy $CmbStopDoneFlag "0"
+      StrCpy $CmbStopHolderLabel "关联程序"
+
+      !insertmacro MUI_HEADER_TEXT "准备更新" "正在检查并停止运行中的旧版实例，请稍候..."
+      nsDialogs::Create 1018
+      Pop $CmbStopPage
+      ${If} $CmbStopPage == error
+        Call CmbCheckAndStopRunning
+        StrCpy $CmbStopDoneFlag "1"
+        Abort
+      ${EndIf}
+
+      ${NSD_CreateLabel} 0u 8u 100% 16u "正在检测运行中的旧版实例..."
+      Pop $CmbStopTitleLabel
+
+      nsDialogs::CreateControl "msctls_progress32" ${WS_CHILD}|${WS_VISIBLE}|${PBS_MARQUEE} 0 0u 30u 100% 14u ""
+      Pop $CmbStopProgressBar
+      SendMessage $CmbStopProgressBar ${PBM_SETMARQUEE} 1 30
+
+      ${NSD_CreateLabel} 0u 54u 100% 52u "正在检查是否有旧版网关或关联程序正在运行，请稍候..."
+      Pop $CmbStopStatusLabel
+
+      ${NSD_CreateLabel} 0u 112u 100% 24u "停止完成后将自动继续安装，请勿强行关闭安装程序。"
+      Pop $CmbStopHintLabel
+
+      GetDlgItem $0 $HWNDPARENT 1
+      SendMessage $0 ${BCM_SETSHIELD} 0 0
+      EnableWindow $0 0
+      GetDlgItem $0 $HWNDPARENT 3
+      EnableWindow $0 0
+
+      StrCpy $CmbStopState "inspecting"
+      StrCpy $CmbStopTick 0
+      StrCpy $R0 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\cmb-stop-instances.ps1" -Mode inspect -DirsJoined "$CmbStopDirs" -CallerPid $CmbStopCallerPid -StatusFile "$PLUGINSDIR\cmb-stop-phase.txt"'
+      Call CmbStartAsyncPs
+      ${If} $CmbStopProcHandle == "0"
+        Call CmbCheckAndStopRunning
+        StrCpy $CmbStopDoneFlag "1"
+        GetDlgItem $0 $HWNDPARENT 1
+        EnableWindow $0 1
+        GetDlgItem $0 $HWNDPARENT 3
+        EnableWindow $0 1
+        Abort
+      ${EndIf}
+
+      ${NSD_CreateTimer} CmbStopPollTimer 120
+      nsDialogs::Show
+    FunctionEnd
+
+    Function CmbStopPageLeave
+      ${If} $CmbStopDoneFlag == "1"
+        Return
+      ${EndIf}
+
+      ${If} $CmbStopState == "confirm"
+        GetDlgItem $0 $HWNDPARENT 1
+        EnableWindow $0 0
+        GetDlgItem $0 $HWNDPARENT 3
+        EnableWindow $0 0
+        ShowWindow $CmbStopProgressBar ${SW_SHOW}
+        SendMessage $CmbStopProgressBar ${PBM_SETMARQUEE} 1 30
+        ${NSD_SetText} $CmbStopTitleLabel "正在自动停止 $CmbStopHolderLabel 与旧版网关..."
+        ${NSD_SetText} $CmbStopStatusLabel "正在优雅退出 $CmbStopHolderLabel 并释放旧版网关占用..."
+        ${NSD_SetText} $CmbStopHintLabel "停止完成后将自动继续安装，请稍候。"
+        StrCpy $CmbStopState "stopping_holders"
+        StrCpy $CmbStopTick 0
+        Delete "$PLUGINSDIR\cmb-stop-phase.txt"
+        StrCpy $R0 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\cmb-stop-instances.ps1" -Mode stop -IncludeHolders -DirsJoined "$CmbStopDirs" -CallerPid $CmbStopCallerPid -StatusFile "$PLUGINSDIR\cmb-stop-phase.txt"'
+        Call CmbStartAsyncPs
+        ${If} $CmbStopProcHandle != "0"
+          ${NSD_CreateTimer} CmbStopPollTimer 120
+          Abort
+        ${EndIf}
+        Call CmbCheckAndStopRunning
+        StrCpy $CmbStopDoneFlag "1"
+        Return
+      ${EndIf}
+
+      ${If} $CmbStopState == "retry"
+        GetDlgItem $0 $HWNDPARENT 1
+        EnableWindow $0 0
+        GetDlgItem $0 $HWNDPARENT 3
+        EnableWindow $0 0
+        ShowWindow $CmbStopProgressBar ${SW_SHOW}
+        SendMessage $CmbStopProgressBar ${PBM_SETMARQUEE} 1 30
+        ${NSD_SetText} $CmbStopTitleLabel "正在重新检测运行中的旧版实例..."
+        ${NSD_SetText} $CmbStopStatusLabel "正在检查是否还有残留进程占用安装目录..."
+        ${NSD_SetText} $CmbStopHintLabel "停止完成后将自动继续安装，请稍候。"
+        StrCpy $CmbStopState "inspecting"
+        StrCpy $CmbStopTick 0
+        Delete "$PLUGINSDIR\cmb-stop-phase.txt"
+        StrCpy $R0 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\cmb-stop-instances.ps1" -Mode inspect -DirsJoined "$CmbStopDirs" -CallerPid $CmbStopCallerPid -StatusFile "$PLUGINSDIR\cmb-stop-phase.txt"'
+        Call CmbStartAsyncPs
+        ${If} $CmbStopProcHandle != "0"
+          ${NSD_CreateTimer} CmbStopPollTimer 120
+          Abort
+        ${EndIf}
+        Call CmbCheckAndStopRunning
+        StrCpy $CmbStopDoneFlag "1"
+        Return
+      ${EndIf}
+
+      Abort
     FunctionEnd
 
     Function CheckDirectoryElevationPre
@@ -268,20 +614,17 @@ cmb_stop_done:
         ${EndIf}
         GetDlgItem $0 $HWNDPARENT 1
         SendMessage $0 ${BCM_SETSHIELD} 0 0
-        Call CmbCheckAndStopRunning
         Abort
       ${EndIf}
       ${If} ${UAC_IsAdmin}
         GetDlgItem $0 $HWNDPARENT 1
         SendMessage $0 ${BCM_SETSHIELD} 0 0
-        Call CmbCheckAndStopRunning
         Abort
       ${EndIf}
       Call CmbIsInstDirWritable
       ${If} $CmbDirWritable == "1"
         GetDlgItem $0 $HWNDPARENT 1
         SendMessage $0 ${BCM_SETSHIELD} 0 0
-        Call CmbCheckAndStopRunning
         Abort
       ${EndIf}
 
@@ -310,6 +653,7 @@ cmb_stop_done:
     FunctionEnd
 
     Page custom CheckDirectoryElevationPre CheckDirectoryElevationLeave
+    Page custom CmbStopPageCreate CmbStopPageLeave
   !macroend
 !endif
 

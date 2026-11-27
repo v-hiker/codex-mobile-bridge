@@ -358,14 +358,17 @@ test('Windows install-update blocker prompt lets user cancel without stopping in
 });
 
 test('Windows install-update auto-stops blocking instances and retries install cleanly',async()=>{
-  let installCalls=0;
+  let installCalls=0;const states=[];
   const blocker={state:'error',message:'请先结束任务并正常退出 Codex，再更新网关。'};
   const f=controller({platform:'win32',confirm:async()=>({response:1})});
   f.register({status:()=>({candidateId:'checked',current:'2.2.2-preview.3',version:'2.2.2-preview.4'}),
+    set:(state,extra)=>states.push({state,...extra}),
     install:async()=>{installCalls++;return installCalls===1?blocker:{state:'restarting'};}});
   const result=await f.invoke('bridge:install-update',{candidateId:'checked'});
   assert.deepEqual(result,{state:'restarting'});
   assert.equal(installCalls,2);
   assert.equal(f.calls.dialogs.length,1);
+  assert.equal(states[0].state,'preparing');
+  assert.match(states[0].message,/自动停止关联实例/);
   assert.deepEqual(JSON.parse(JSON.stringify(f.calls.workers)),[{action:'update-stop-blockers',payload:{target:path.dirname('/fixture/app/Bridge.exe'),force:true}}]);
 });

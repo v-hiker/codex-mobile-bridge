@@ -21,7 +21,11 @@ const english={...dictionary,
   '切换版本会备份网关配置、替换当前应用并重启，继续使用现有资料。预览版可能存在未解决的问题。':'Switching versions backs up your gateway configuration, replaces the current app and restarts it with your existing data. Preview versions may have unresolved issues.',
   '检测到关联实例正在运行，是否自动停止并继续更新？':'Related instances are running. Stop them and continue updating?',
   '点击“自动停止并继续更新”将先尝试正常退出占用网关的关联程序并释放文件锁，然后自动继续安装更新。请确认其中没有正在执行的任务。':'Clicking "Stop and continue updating" will try to quit the blocking apps gracefully to release file locks, then continue installing the update. Make sure no active tasks are running.',
-  '自动停止并继续更新':'Stop and continue updating'
+  '自动停止并继续更新':'Stop and continue updating',
+  '正在自动停止关联实例并释放文件锁…':'Stopping blocking instances and releasing file locks…',
+  '选择访问入口':'Select access entry',
+  '共 {count} 个入口':'{count} entries',
+  '暂无可用访问地址':'No access URLs available'
 };
 function normalize(value){return typeof value==='string'&&/^en(?:-|$)/i.test(value)?'en':'zh-CN';}
 function translate(text,language){

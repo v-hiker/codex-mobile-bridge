@@ -10,6 +10,7 @@ if($('quota-continue-enabled')){
   setInterval(()=>toggle.refresh(),10000);toggle.refresh();
 }
 let connectionDraft=[],savedConnections='[]',lanDraft=[],savedLan='[]';
+let selectedAddressUrl='',selectedTransferUrl='';
 let appearanceRevision=0,appearanceTheme='system';
 async function updateAppearance(theme){
   if(typeof api.appearance!=='function')return;
@@ -280,6 +281,98 @@ function renderGatewayActions(){
   for(const id of ['stop','clients-stop']){const button=$(id);if(button){button.disabled=!running||startPending||stopPending;button.setAttribute('aria-busy',String(stopPending));}}
   if(snapshot)window.GatewayLayout?.update(snapshot,{starting,stopping:stopPending});
 }
+function isLoopbackHost(hostname){return ['127.0.0.1','localhost','[::1]'].includes(hostname);}
+function preferredEntryUrl(urls=[]){
+  return urls.find(url=>url.startsWith('https:'))||urls.find(url=>{try{return !isLoopbackHost(new URL(url).hostname);}catch{return true;}})||urls[0]||'';
+}
+function addressMeta(url,value){
+  const fixed=(value?.preferences?.connections||[]).some(c=>c.enabled&&url===c.publicUrl+'/');
+  let category;
+  if(fixed)category=t('固定 HTTPS · 请检测入口');
+  else if(url.startsWith('https:'))category=t('临时外网 HTTPS');
+  else{
+    let hostname='';
+    try{hostname=new URL(url).hostname;}catch{}
+    if(isLoopbackHost(hostname))category=t('此电脑');
+    else{
+      const adapter=(value?.networkInterfaces||[]).find(row=>(row.addresses||[]).includes(hostname));
+      category=adapter?t('局域网')+' · '+adapter.name:t('局域网');
+    }
+  }
+  return {category,optionText:category+' — '+url};
+}
+function buildEntrySelector(id,urls,selectedUrl,value,onChange){
+  const wrap=document.createElement('div');wrap.className='address-picker';
+  const head=document.createElement('div');head.className='address-picker-head';
+  const title=document.createElement('span');title.className='address-picker-label';title.textContent=t('选择访问入口');
+  const count=document.createElement('span');count.className='address-picker-count';count.textContent=t('共 {count} 个入口').replace('{count}',String(urls.length));
+  head.append(title,count);
+  const select=document.createElement('select');select.id=id;select.setAttribute('aria-label',t('选择访问入口'));
+  for(const url of urls){
+    const option=document.createElement('option');option.value=url;option.textContent=addressMeta(url,value).optionText;
+    select.append(option);
+  }
+  select.value=selectedUrl;select.onchange=()=>onChange(select.value);
+  wrap.append(head,select);
+  return wrap;
+}
+function renderAddressEntries(value,running){
+  const container=$('addresses');
+  container.replaceChildren();
+  const urls=value?.urls||[];
+  if(!urls.length){
+    selectedAddressUrl='';
+    const empty=document.createElement('p');empty.className='hint';empty.textContent=t('暂无可用访问地址');
+    container.append(empty);
+    return;
+  }
+  if(!urls.includes(selectedAddressUrl))selectedAddressUrl=preferredEntryUrl(urls);
+  if(urls.length>1){
+    container.append(buildEntrySelector('address-selector',urls,selectedAddressUrl,value,next=>{
+      const previous=qrEntries.get(selectedAddressUrl);
+      if(previous?.node.open){previous.node.open=false;clearPairing(previous);}
+      selectedAddressUrl=next;
+      renderAddressEntries(snapshot,!!snapshot?.runtime.running);
+      window.BridgeSelects?.enhanceAll?.();
+    }));
+  }
+  const url=selectedAddressUrl,meta=addressMeta(url,value);
+  const card=document.createElement('div');card.className='address';
+  const head=document.createElement('div');head.className='address-head';
+  const text=document.createElement('div'),label=document.createElement('small'),address=document.createElement('strong');
+  label.textContent=meta.category+(running?'':t(' · 网关未启动'));
+  address.textContent=url;
+  text.append(label,address);
+  const actions=document.createElement('div');actions.className='address-actions';
+  for(const [name,action] of [[t('复制'),()=>api.copy(url)],[t('打开'),()=>api.open(url)]]){
+    const button=document.createElement('button');button.type='button';button.textContent=name;button.onclick=()=>action().catch(e=>feedback(e.message,true));actions.append(button);
+  }
+  head.append(text,actions);card.append(head);
+  let loopback=false;
+  try{loopback=isLoopbackHost(new URL(url).hostname);}catch{}
+  if(!loopback)appendPairing(card,url,running);
+  container.append(card);
+}
+function renderTransferEntries(value,running){
+  const transferEntries=$('local-transfer-entries');
+  if(!transferEntries)return;
+  transferEntries.replaceChildren();
+  const transferUrls=(value?.urls||[]).filter(url=>{try{return !isLoopbackHost(new URL(url).hostname);}catch{return true;}});
+  if(!transferUrls.length){selectedTransferUrl='';transferEntries.textContent=t('开启局域网或外网访问后，可扫码传输。');return;}
+  if(!transferUrls.includes(selectedTransferUrl))selectedTransferUrl=transferUrls.includes(selectedAddressUrl)?selectedAddressUrl:transferUrls[0];
+  if(transferUrls.length>1){
+    const picker=buildEntrySelector('transfer-address-selector',transferUrls,selectedTransferUrl,value,next=>{
+      const previous=qrEntries.get('transfer:'+selectedTransferUrl);
+      if(previous?.node.open){previous.node.open=false;clearPairing(previous);}
+      selectedTransferUrl=next;
+      renderTransferEntries(snapshot,!!snapshot?.runtime.running);
+      window.BridgeSelects?.enhanceAll?.();
+    });
+    picker.classList.add('transfer-picker');
+    transferEntries.append(picker);
+  }
+  appendPairing(transferEntries,selectedTransferUrl,running,true);
+}
 function render(value,watchRevision=watchPanel.revision){
   $('login-startup-setting').hidden=$('login-startup-hint').hidden=!value.loginStartup?.supported;
   $('login-startup-hint').textContent=t(value.loginStartup?.requiresApproval?'请在系统设置的登录项中允许此应用。':'开启后，登录电脑时自动启动网关。');
@@ -324,15 +417,10 @@ function render(value,watchRevision=watchPanel.revision){
   }
   $('notification-readiness').textContent=!notificationsEnabled?t('尚未开启手机通知：填写并保存后，先发送测试通知。'):!running?t('网关尚未启动：可以先测试通知接收，聊天提醒需要启动网关。'):!value.runtime.supportsNotifications?t('当前网关版本不支持聊天提醒，请在首页停止后重新启动网关，再刷新手机网页。'):t('网关已就绪：在手机聊天中点击“提醒”，勾选“开启聊天提醒”并保存。');
   $('data-dir').textContent=value.dataDir;
-  $('addresses').replaceChildren();
   prunePairing(value.urls);
-  const transferEntries=$('local-transfer-entries');
-  if(transferEntries){
-    transferEntries.replaceChildren();
-    for(const url of value.urls)if(!['127.0.0.1','localhost','[::1]'].includes(new URL(url).hostname))appendPairing(transferEntries,url,running,true);
-    if(!transferEntries.childElementCount)transferEntries.textContent=t('开启局域网或外网访问后，可扫码传输。');
-  }
-  for(const url of value.urls){const card=document.createElement('div');card.className='address';const text=document.createElement('div'),label=document.createElement('small'),address=document.createElement('strong');const fixed=(value.preferences.connections||[]).some(c=>c.enabled&&url===c.publicUrl+'/');label.textContent=(fixed?t('固定 HTTPS · 请检测入口'):url.startsWith('https:')?t('临时外网 HTTPS'):url.includes('127.0.0.1')?t('此电脑'):t('局域网'))+(running?'':t(' · 网关未启动'));address.textContent=url;text.append(label,address);card.append(text);for(const [name,action] of [[t('复制'),()=>api.copy(url)],[t('打开'),()=>api.open(url)]]){const button=document.createElement('button');button.textContent=name;button.onclick=()=>action().catch(e=>feedback(e.message,true));card.append(button);}if(!['127.0.0.1','localhost','[::1]'].includes(new URL(url).hostname))appendPairing(card,url,running);$('addresses').append(card);}
+  renderTransferEntries(value,running);
+  renderAddressEntries(value,running);
+  window.BridgeSelects?.enhanceAll?.();
   watchPanel.render(value,watchRevision);
   if(!dirty){
     const p=value.preferences,n=value.notifications;
@@ -635,8 +723,11 @@ function renderUpdate(){
   $('install-update').textContent=t(value.manualRelease?'打开官方发布页':value.manualInstall?'下载所选版本':value.intent==='return-stable'?'返回稳定版并重启':value.intent==='opt-in-preview'?'安装预览版并重启':'更新并重启');
   $('install-update').disabled=busy||value.state==='checking';
   $('update-notes').hidden=!value.notes;$('update-notes').textContent=value.notes||'';
-  $('update-progress').hidden=value.state!=='downloading';
-  $('update-progress').value=value.total?100*value.received/value.total:0;
+  const progressBar=$('update-progress'),indeterminate=['preparing','restarting'].includes(value.state)||updateBusy&&value.state!=='downloading';
+  progressBar.hidden=value.state!=='downloading'&&!indeterminate;
+  progressBar.classList?.toggle?.('is-indeterminate',!!indeterminate);
+  if(value.state==='downloading')progressBar.value=value.total?100*value.received/value.total:0;
+  else if(indeterminate)progressBar.removeAttribute?.('value');
   let result=snapshot.updateResult;
   // A successful record describes the app that was installed at that time.
   // Manual app replacement preserves this data file, so an old success cannot

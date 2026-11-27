@@ -3,10 +3,21 @@ param(
   [string]$Mode = 'inspect',
   [string]$DirsJoined = '',
   [switch]$IncludeHolders,
-  [int]$CallerPid = 0
+  [int]$CallerPid = 0,
+  [string]$StatusFile = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Write-Phase {
+  param([string]$Phase)
+  if ([string]::IsNullOrWhiteSpace($StatusFile)) {
+    return
+  }
+  try {
+    [System.IO.File]::WriteAllText($StatusFile, $Phase, [System.Text.Encoding]::ASCII)
+  } catch { }
+}
 
 function Resolve-TargetRoots {
   param([string]$Raw)
@@ -221,6 +232,7 @@ function Test-PidAlive {
   return $null -ne $proc
 }
 
+Write-Phase 'INSPECTING'
 try {
   $state = Get-LockState
 } catch {
@@ -232,6 +244,7 @@ if ($Mode -eq 'inspect') {
 }
 
 if ($state.Code -eq 0) {
+  Write-Phase 'DONE'
   exit 0
 }
 
@@ -242,6 +255,7 @@ if (($state.HasCodex -or $state.HasZCode) -and -not $IncludeHolders) {
 # Stop external desktop holders (ChatGPT.exe / Codex.exe / ZCode.exe) BEFORE
 # stopping gateway workers so they do not respawn codex-mobile-gateway.exe.
 if ($IncludeHolders -and $state.HolderProcs.Count -gt 0) {
+  Write-Phase 'STOPPING_HOLDERS'
   $holderImageSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
   $holderPids = New-Object 'System.Collections.Generic.List[int]'
   foreach ($hp in $state.HolderProcs) {
@@ -301,6 +315,7 @@ if ($IncludeHolders -and $state.HolderProcs.Count -gt 0) {
 }
 
 # Refresh state before attempting graceful gateway stop.
+Write-Phase 'STOPPING_GATEWAY'
 try {
   $state = Get-LockState
 } catch {
@@ -342,6 +357,7 @@ if ($servePids.Count -gt 0) {
 }
 
 # Try graceful CloseMainWindow on remaining processes under target roots, then force stop.
+Write-Phase 'STOPPING_BRIDGE'
 try {
   $state = Get-LockState
 } catch {
@@ -379,6 +395,7 @@ foreach ($proc in $state.Direct) {
   } catch { }
 }
 
+Write-Phase 'VERIFYING'
 $verifyDeadline = (Get-Date).AddSeconds(8)
 while ((Get-Date) -lt $verifyDeadline) {
   try {
@@ -387,6 +404,7 @@ while ((Get-Date) -lt $verifyDeadline) {
     exit 2
   }
   if ($state.Direct.Count -eq 0) {
+    Write-Phase 'DONE'
     exit 0
   }
   Start-Sleep -Milliseconds 250
@@ -398,6 +416,7 @@ try {
   exit 2
 }
 if ($state.Direct.Count -eq 0) {
+  Write-Phase 'DONE'
   exit 0
 }
 if ($state.Code -gt 0) {

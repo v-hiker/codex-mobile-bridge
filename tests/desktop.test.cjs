@@ -1421,3 +1421,28 @@ test('update reminder routes directly to the maintenance update tab without a sy
  ui.run("tab('logs')");assert.equal(panels.logs.hidden,false);assert.equal(panels.updates.hidden,true);
  ui.run("tab('advanced')");assert.equal(panels.advanced.hidden,false);assert.equal(panels.updates.hidden,true);assert.equal(tabs[0].classList.active,true);
 });
+
+test('phone access addresses collapse multiple adapters into one selector while preferring reachable entries',async()=>{
+ const ui=await renderer();
+ ui.value.runtime.running=true;
+ ui.value.networkInterfaces=[
+  {id:'wlan',name:'WLAN',addresses:['192.168.1.105']},
+  {id:'eth',name:'Ethernet',addresses:['10.0.0.8']},
+  {id:'wsl',name:'vEthernet (WSL)',addresses:['172.20.0.1']},
+ ];
+ ui.value.urls=['http://127.0.0.1:8787','http://192.168.1.105:8787','http://10.0.0.8:8787','http://172.20.0.1:8787','https://tx.tail1dbae6.ts.net/'];
+ await ui.poll();
+ const root=ui.nodes.get('addresses');
+ const picker=root.children[0],select=picker.children[1],card=root.children[1];
+ assert.equal(select.id,'address-selector');
+ assert.equal(select.options.length,5);
+ assert.equal(select.value,'https://tx.tail1dbae6.ts.net/');
+ assert.match(select.options[1].textContent,/WLAN/);
+ assert.equal(card.className,'address');
+ assert.equal(root.children.filter(node=>node.className==='address').length,1);
+ assert.equal(card.children[1].className,'qr-entry');
+ select.value='http://10.0.0.8:8787';
+ select.onchange();
+ assert.equal(ui.nodes.get('addresses').children[1].children[0].children[0].children[1].textContent,'http://10.0.0.8:8787');
+ assert.match(ui.nodes.get('addresses').children[1].children[0].children[0].children[0].textContent,/Ethernet/);
+});
